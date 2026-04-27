@@ -39,19 +39,19 @@ namespace vector_pursuit_controller
 {
 
 /**
- * @class nav2_vector_pursuit::VectorPursuitController
- * @brief Regulated pure pursuit controller plugin
+ * @class vector_pursuit_controller::VectorPursuitController
+ * @brief Vector Pursuit path-tracking controller plugin (Wit, 2006)
  */
 class VectorPursuitController : public nav2_core::Controller
 {
 public:
   /**
-   * @brief Constructor for nav2_vector_pursuit::VectorPursuitController
+   * @brief Constructor for vector_pursuit_controller::VectorPursuitController
    */
   VectorPursuitController() = default;
 
   /**
-   * @brief Destrructor for nav2_vector_pursuit::VectorPursuitController
+   * @brief Destructor for vector_pursuit_controller::VectorPursuitController
    */
   ~VectorPursuitController() override = default;
 
@@ -83,16 +83,12 @@ public:
   void deactivate() override;
 
   /**
-   * @brief Compute the best command given the current pose and velocity, with possible debug information
+   * @brief Compute the best velocity command given the current pose and velocity.
    *
-   * Same as above computeVelocityCommands, but with debug results.
-   * If the results pointer is not null, additional information about the twists
-   * evaluated will be in results after the call.
-   *
-   * @param pose      Current robot pose
-   * @param velocity  Current robot velocity
-   * @param goal_checker   Ptr to the goal checker for this task in case useful in computing commands
-   * @return          Best command
+   * @param pose          Current robot pose (in odom frame)
+   * @param velocity      Current measured robot velocity
+   * @param goal_checker  Ptr to the goal checker for this task; used to read goal tolerances
+   * @return              Twist command (linear.x, angular.z)
    */
   geometry_msgs::msg::TwistStamped computeVelocityCommands(
     const geometry_msgs::msg::PoseStamped & pose,
