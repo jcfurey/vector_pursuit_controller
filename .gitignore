@@ -1,2 +1,8 @@
 # macOS specific
 .DS_Store
+
+# Coverage / CI artifacts
+*.info
+*.gcda
+*.gcno
+coverage/
