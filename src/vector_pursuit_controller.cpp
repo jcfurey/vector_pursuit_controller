@@ -1004,6 +1004,10 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
         }
         inflation_cost_scaling_factor_ = parameter.as_double();
       } else if (name == plugin_name_ + ".desired_linear_vel") {
+        // Update both the live and base setpoints. Without updating the
+        // base value, a subsequent setSpeedLimit(NO_SPEED_LIMIT) would
+        // restore the original startup value rather than the operator's
+        // most recent intent. This matches the behavior of nav2's RPP.
         desired_linear_vel_ = parameter.as_double();
         base_desired_linear_vel_ = parameter.as_double();
       } else if (name == plugin_name_ + ".lookahead_dist") {
