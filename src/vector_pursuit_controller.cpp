@@ -421,6 +421,12 @@ double VectorPursuitController::approachVelocityScalingFactor(
   const nav_msgs::msg::Path & transformed_path
 ) const
 {
+  // A non-positive scaling distance disables approach scaling outright;
+  // dividing by it would produce inf/NaN that propagate into linear_vel.
+  if (approach_velocity_scaling_dist_ <= 0.0) {
+    return 1.0;
+  }
+
   // Waiting to apply the threshold based on integrated distance ensures we don't
   // erroneously apply approach scaling on curvy paths that are contained in a large local costmap.
   double remaining_distance = nav2_util::geometry_utils::calculate_path_length(transformed_path);
@@ -471,8 +477,15 @@ void VectorPursuitController::applyConstraints(
     }
   }
 
-  // limit the linear velocity by curvature
-  double max_vel_for_curve = std::sqrt(max_lateral_accel_ / std::abs(curvature));
+  // limit the linear velocity by curvature; near-zero curvature (straight
+  // path, where calcTurningRadius returned numeric_limits::max()) would
+  // otherwise produce inf and rely on the downstream std::min to clamp.
+  double max_vel_for_curve;
+  if (std::abs(curvature) < 1e-9) {
+    max_vel_for_curve = std::numeric_limits<double>::max();
+  } else {
+    max_vel_for_curve = std::sqrt(max_lateral_accel_ / std::abs(curvature));
+  }
 
   // Apply constraints
   linear_vel = std::min(
