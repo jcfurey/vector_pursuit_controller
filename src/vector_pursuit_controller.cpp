@@ -407,10 +407,11 @@ double VectorPursuitController::costAtPose(const double & x, const double & y)
   unsigned int mx, my;
 
   if (!costmap_->worldToMap(x, y, mx, my)) {
-    RCLCPP_FATAL(
-      logger_,
-      "The dimensions of the costmap is too small to fully include your robot's footprint, "
-      "thusly the robot cannot proceed further");
+    RCLCPP_WARN_THROTTLE(
+      logger_, *clock_, 5000,
+      "VectorPursuitController: robot pose (%.2f, %.2f) is outside the local "
+      "costmap; cannot evaluate cost at current pose. Recoverable if the "
+      "rolling window catches up.", x, y);
 
     throw nav2_core::ControllerException(
             "VectorPursuitController: Dimensions of the costmap are too small "
