@@ -390,11 +390,15 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   cmd_vel.twist.linear.x = linear_vel;
   cmd_vel.twist.angular.z = angular_vel;
 
-  // TODO(kostubh_bcr): BUG in recieved speed param from
-  // controller server (in binaries 1.1.15).
-  // Use speed instead when branch with the fix is merged.
+  // Track the measured robot velocity that controller_server passes
+  // in. Earlier upstream this was avoided due to a Humble-era nav2 bug
+  // (binaries 1.1.15) where `speed` was unreliable; that has been
+  // fixed in Jazzy. Using the commanded twist as "current speed" feeds
+  // the acceleration limits in applyConstraints and the slew clamp in
+  // rotateToHeading off our own previous output, which lets the
+  // commanded velocity ratchet upward unbounded relative to ground
+  // truth on a saturated or stalled chassis.
   last_cmd_vel_ = speed;
-  last_cmd_vel_ = cmd_vel.twist;
   return cmd_vel;
 }
 
