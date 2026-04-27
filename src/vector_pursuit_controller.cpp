@@ -726,6 +726,13 @@ bool VectorPursuitController::isCollisionImminent(
   pose_msg.header.frame_id = arc_pts_msg.header.frame_id;
   pose_msg.header.stamp = arc_pts_msg.header.stamp;
 
+  // If both commanded velocities are effectively zero we are not going
+  // anywhere — no collision can be imminent and projection_time would
+  // otherwise be 0, hanging the while-loop below forever.
+  if (std::abs(linear_vel) < 0.01 && std::abs(angular_vel) < 0.01) {
+    return false;
+  }
+
   double projection_time = 0.0;
   if (std::abs(linear_vel) < 0.01 && std::abs(angular_vel) > 0.01) {
     // rotating to heading at goal or toward path
