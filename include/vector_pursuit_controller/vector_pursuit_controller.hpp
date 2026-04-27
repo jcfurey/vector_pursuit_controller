@@ -342,7 +342,6 @@ protected:
   double max_robot_pose_search_dist_;
   bool use_interpolation_;
   bool allow_reversing_;
-  bool is_reversing_;
   bool use_heading_from_path_;
 
   geometry_msgs::msg::Twist last_cmd_vel_;

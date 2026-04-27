@@ -106,8 +106,6 @@ void VectorPursuitController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".rotate_to_heading_min_angle", rclcpp::ParameterValue(0.785));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".rotate_to_heading_angular_vel", rclcpp::ParameterValue(1.8));
-  declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_angular_accel", rclcpp::ParameterValue(3.2));
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_linear_accel", rclcpp::ParameterValue(2.0));
