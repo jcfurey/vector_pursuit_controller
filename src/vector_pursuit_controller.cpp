@@ -586,7 +586,10 @@ geometry_msgs::msg::PoseStamped VectorPursuitController::getLookAheadPoint(
 
     // if heading needs to be computed from path,
     // find the angle of the vector from second last to last pose
-    if (!use_heading_from_path_) {
+    // (requires at least two poses; with only one, fall back to the
+    // pose's own orientation rather than walking off the front of the
+    // container)
+    if (!use_heading_from_path_ && transformed_plan.poses.size() >= 2) {
       pose.pose.orientation = getOrientation(
         std::prev(std::prev(transformed_plan.poses.end()))->pose.position,
         std::prev(transformed_plan.poses.end())->pose.position);
@@ -768,6 +771,12 @@ bool VectorPursuitController::isCollisionImminent(
 double VectorPursuitController::getCuspDist(
   const nav_msgs::msg::Path & transformed_plan)
 {
+  // Need at least three poses to evaluate a cusp via the OA·AB dot product.
+  // The unsigned arithmetic in the loop bound underflows if size < 2.
+  if (transformed_plan.poses.size() < 3) {
+    return std::numeric_limits<double>::max();
+  }
+
   // Iterating through the transformed global path to determine the position of the cusp
   for (unsigned int pose_id = 1; pose_id < transformed_plan.poses.size() - 1; ++pose_id) {
     // We have two vectors for the dot product OA and AB. Determining the vectors.
