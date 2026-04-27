@@ -6,12 +6,12 @@ path-tracking algorithm (Wit, 2006). Vector Pursuit is the geometric
 extension of Pure Pursuit that takes the path heading at the lookahead
 point into account, gated by a single shaping parameter `k`.
 
-| Field           | Value                                                                                  |
-|-----------------|----------------------------------------------------------------------------------------|
-| Upstream remote | `https://github.com/blackcoffeerobotics/vector_pursuit_controller` (`origin` today)    |
-| Fork remote     | TBD — push this branch to a personal fork and rename the upstream remote to `upstream` |
-| Tracked branch  | `jazzy` (upstream); `cam_devel` (fork)                                                 |
-| Last sync base  | `45e3dd6` — *2.0.0*                                                                    |
+| Field           | Value                                                                  |
+|-----------------|------------------------------------------------------------------------|
+| Upstream remote | `https://github.com/blackcoffeerobotics/vector_pursuit_controller` (`upstream`) |
+| Fork remote     | `git@github.com:jcfurey/vector_pursuit_controller.git` (`origin`)      |
+| Tracked branch  | `jazzy` (upstream); `cam_devel` (fork)                                 |
+| Last sync base  | `45e3dd6` — *2.0.0*                                                    |
 
 The fork is **upstream-trackable** — every patch lives as a commit on
 top of the upstream `jazzy` history with no rewrites or squashes, so a
@@ -19,8 +19,8 @@ top of the upstream `jazzy` history with no rewrites or squashes, so a
 Verify with:
 
 ```bash
-git rev-list --count jazzy..cam_devel    # commits ahead of upstream
-git rebase jazzy                          # pick up new upstream work
+git rev-list --count upstream/jazzy..HEAD   # commits ahead of upstream
+git rebase upstream/jazzy                   # pick up new upstream work
 ```
 
 ## Local divergence — hardening pass 2026-04-27 (twelve commits)
@@ -106,17 +106,14 @@ if you re-open the file:
 
 ```bash
 # Inside src/packages/navigation/vector_pursuit_controller:
-git fetch origin                                # currently the upstream remote
-git log --oneline origin/jazzy..HEAD            # what we have on top
-git log --oneline HEAD..origin/jazzy            # what's new upstream
-git rebase origin/jazzy                         # rebase the fork
+git fetch upstream
+git log --oneline upstream/jazzy..HEAD          # what we have on top
+git log --oneline HEAD..upstream/jazzy          # what's new upstream
+git rebase upstream/jazzy                       # rebase the fork
 # Resolve conflicts, then update the "Last sync base" line above.
-git push <fork-remote> cam_devel --force-with-lease
+git push origin cam_devel --force-with-lease    # publish to the fork
 ```
 
 After syncing, update the **Last sync base** line in this file with
 the new merge-base commit and a one-line label, and commit alongside
-the rebase. If/when the fork is moved to a personal GitHub remote,
-rename `origin` → `upstream` and the fork → `origin` to match the
-groundgrid / trillium pattern, then update the table at the top of
-this file.
+the rebase.
