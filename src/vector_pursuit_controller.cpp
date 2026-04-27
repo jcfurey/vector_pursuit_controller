@@ -570,17 +570,6 @@ geometry_msgs::msg::Quaternion VectorPursuitController::getOrientation(
   return quat_msg;
 }
 
-double getPositiveRadians(double angle)
-{
-  // check for infinity or NaN
-  if (isnan(angle) || isinf(angle)) {return 0.0;}
-
-  while (angle < 0.0) {
-    angle += 2.0 * M_PI;
-  }
-  return angle;
-}
-
 geometry_msgs::msg::PoseStamped VectorPursuitController::getLookAheadPoint(
   const double & lookahead_dist,
   const nav_msgs::msg::Path & transformed_plan)
@@ -643,11 +632,15 @@ geometry_msgs::msg::PoseStamped VectorPursuitController::getLookAheadPoint(
         prev_pose_it->pose.position, goal_pose_it->pose.position);
 
       // use the headings from the prev and goal poses to interpolate
-      // a new heading for the lookahead point
+      // a new heading for the lookahead point. Use the half-angle
+      // formula so that wrap-around (e.g. prev=355 deg, goal=5 deg)
+      // produces 0 deg rather than 180 deg.
     } else {
-      double goal_yaw = getPositiveRadians(tf2::getYaw(goal_pose_it->pose.orientation));
-      double prev_yaw = getPositiveRadians(tf2::getYaw(prev_pose_it->pose.orientation));
-      double interpolated_yaw = angles::normalize_angle((goal_yaw + prev_yaw) / 2.0);
+      const double goal_yaw = tf2::getYaw(goal_pose_it->pose.orientation);
+      const double prev_yaw = tf2::getYaw(prev_pose_it->pose.orientation);
+      const double half_delta =
+        angles::shortest_angular_distance(prev_yaw, goal_yaw) * 0.5;
+      const double interpolated_yaw = angles::normalize_angle(prev_yaw + half_delta);
       pose.pose.orientation.x = 0.0;
       pose.pose.orientation.y = 0.0;
       pose.pose.orientation.z = sin(interpolated_yaw / 2.0);
