@@ -29,14 +29,17 @@ RUN git clone --depth 1 -b ${NAV2_BRANCH} \
       https://github.com/ros-navigation/navigation2.git src/navigation2
 COPY . src/vector_pursuit_controller
 
-# Workarounds for nav2-main-vs-Lyrical skew (BT.CPP getter, GCC 15 -Werror)
-RUN bash src/vector_pursuit_controller/docker/patches/apply_patches.sh /opt/ws/src
-
-# Resolve dependencies and build only the controller's dependency closure
+# Resolve dependencies, apply the nav2-main-vs-Lyrical workarounds, and build
+# only the controller's dependency closure. rosdep is scoped to that closure
+# (via colcon list) so we don't pull deps for unrelated Nav2 packages we never
+# build (e.g. ompl for nav2_smac_planner). apply_patches.sh runs *after* rosdep
+# because one patch targets the BehaviorTree.CPP headers that rosdep installs.
 RUN source /opt/ros/lyrical/setup.bash && \
     apt-get update -qq && \
     rosdep update --rosdistro lyrical 2>&1 | tail -2 && \
-    rosdep install --from-paths src --ignore-src -r -y --rosdistro lyrical && \
+    PKG_PATHS="$(colcon list --packages-up-to vector_pursuit_controller --paths-only | tr '\n' ' ')" && \
+    rosdep install --from-paths ${PKG_PATHS} --ignore-src -r -y --rosdistro lyrical && \
+    bash src/vector_pursuit_controller/docker/patches/apply_patches.sh /opt/ws/src && \
     colcon build --packages-up-to vector_pursuit_controller \
       --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     rm -rf build log /var/lib/apt/lists/*

@@ -6,6 +6,9 @@
 # Lyrical release (its 'main' currently tracks Rolling, which is ahead of
 # Lyrical's BehaviorTree.CPP and pairs with GCC 15).
 #
+# NOTE: run this AFTER `rosdep install` — patch (1) edits the BehaviorTree.CPP
+# headers that rosdep installs, so it is a no-op if run beforehand.
+#
 # Usage: apply_patches.sh [WORKSPACE_SRC_DIR]   (default: /opt/ws/src)
 set -euo pipefail
 
@@ -17,11 +20,14 @@ NAV2_PKG_CMAKE="${WS_SRC}/navigation2/nav2_common/cmake/nav2_package.cmake"
 # 1) BehaviorTree.CPP 4.9.0 (Lyrical) lacks the public Tree::wakeUpSignal()
 #    getter that nav2 main now calls. Add the inline accessor exactly as
 #    BT.CPP master defines it (it returns the already-present private member).
-if [[ -f "$BT_HEADER" ]] && ! grep -q "wakeUpSignal() const" "$BT_HEADER"; then
+if [[ ! -f "$BT_HEADER" ]]; then
+  echo "[patch] WARNING: $BT_HEADER not found — is BehaviorTree.CPP installed yet?" >&2
+  echo "[patch]          run this after 'rosdep install'." >&2
+elif grep -q "wakeUpSignal() const" "$BT_HEADER"; then
+  echo "[patch] BT.CPP Tree::wakeUpSignal() already present"
+else
   sed -i 's|^  void emitWakeUpSignal();|  void emitWakeUpSignal();\n\n  [[nodiscard]] std::shared_ptr<WakeUpSignal> wakeUpSignal() const { return wake_up_; }|' "$BT_HEADER"
   echo "[patch] added Tree::wakeUpSignal() getter to $BT_HEADER"
-else
-  echo "[patch] BT.CPP wakeUpSignal() already present (or header not found)"
 fi
 
 # 2) GCC 15 (Ubuntu 26.04 / Resolute) emits a spurious -Werror=null-dereference
