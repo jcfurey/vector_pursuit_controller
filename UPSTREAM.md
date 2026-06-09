@@ -116,6 +116,24 @@ test) targets the pre-2.0 test fixture API and was not ported; the
 min-turning-radius clamp it exercises is covered by the existing
 `calcTurnRadius` "directly behind" case.
 
+## Zero-turn differential-drive target
+
+The intended deployment is a zero-turn differential-drive base
+(`min_turning_radius: 0.0`, which auto-enables `use_rotate_to_heading`).
+That platform exposed an asymmetry the Ackermann-flavoured defaults
+hid: the rotate-to-heading paths acceleration-limit `angular_vel`
+against `max_angular_accel`, but the main curvature-tracking path
+(`angular_vel = linear_vel / turning_radius`) did not. With a
+near-zero `min_turning_radius` the radius clamp bounds nothing, so a
+sharp lookahead produced a large, cycle-to-cycle-discontinuous angular
+command — harmless on a car-like base that can't execute it, but real
+jerk/slip on a base that can.
+
+`applyAngularAccelerationLimit()` now factors the clamp (shared by
+`rotateToHeading`) and is applied on the curvature path too.
+`config/diffdrive_nav2_params.yaml` is a diff-drive starting config;
+README "Platform notes" documents the choice.
+
 ## ROS 2 distro support
 
 Verified 2026-06-09 in the official `ros:<distro>-ros-base` images

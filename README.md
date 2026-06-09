@@ -30,6 +30,19 @@ These are additional features on top of the core Vector Pursuit algorithm that e
 
 ## Configuration
 
+### Platform notes
+
+- **Zero-turn differential drive:** set `min_turning_radius: 0.0`, which lets
+  the controller rotate in place and auto-enables `use_rotate_to_heading`.
+  Tune `max_angular_accel` to your chassis — it is enforced on the
+  curvature-tracking path as well as rotate-to-heading, so it bounds the
+  angular jerk a holonomic-in-yaw base would otherwise execute on tight
+  lookaheads. A starting configuration is in
+  [`config/diffdrive_nav2_params.yaml`](config/diffdrive_nav2_params.yaml).
+- **Ackermann / car-like:** set `min_turning_radius` to at least the
+  platform's (and the planner's) real minimum turning radius and keep
+  `use_rotate_to_heading: false`.
+
 ### Core Parameters
 The following parameters tune the core path-tracking algorithm and are not needed by the [additional features](#features-offered).
 
@@ -63,7 +76,7 @@ These parameters are used to tune and control the behaviour of
 | On Point Rotation | `use_rotate_to_heading` | Enable/disable rotate-to-heading behavior. Will override reversing if both are enabled. |
 || `rotate_to_heading_angular_vel`    | Angular velocity for rotating to heading.                        |
 || `rotate_to_heading_min_angle`      | Minimum angle to trigger rotate-to-heading behavior.             |
-|| `max_angular_accel`                | Maximum angular acceleration.                                    |
+|| `max_angular_accel`                | Maximum angular acceleration. Enforced on both the rotate-to-heading and the curvature-tracking paths, so it caps angular jerk on platforms (e.g. zero-turn differential drive) that can physically execute large angular rates. |
 | Optional Reversing | `allow_reversing`                | Will move in reverse if the lookahead point is behind the robot. |
 
 ## Default Parameters

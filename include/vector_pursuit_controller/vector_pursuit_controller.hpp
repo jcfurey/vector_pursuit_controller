@@ -253,6 +253,16 @@ protected:
     const double & angle_to_path, const geometry_msgs::msg::Twist & curr_speed);
 
   /**
+   * @brief Limit an angular velocity command to a feasible angular
+   * acceleration about the current angular speed
+   * @param angular_vel desired angular velocity
+   * @param curr_angular_vel the current angular speed
+   * @return angular velocity clamped to [curr - a*dt, curr + a*dt]
+   */
+  double applyAngularAccelerationLimit(
+    double angular_vel, double curr_angular_vel) const;
+
+  /**
    * @brief Apply angular braking to stop at desired angle
    * @param angular_vel angular velocity
    * @param angle_to_path Angle of robot output relative to lookahead point

@@ -404,6 +404,13 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
     if (lookahead_point.pose.position.y < 0) {
       angular_vel *= -1;
     }
+
+    // Bound the angular acceleration. On a platform with a small/zero
+    // min_turning_radius (e.g. a zero-turn differential drive) a sharp
+    // lookahead yields a small radius and thus a large angular_vel that
+    // can jump between cycles; unlike the rotate-to-heading paths this one
+    // was previously unbounded, commanding infeasible angular jerk.
+    angular_vel = applyAngularAccelerationLimit(angular_vel, last_cmd_vel_.angular.z);
   }
 
   // Collision checking
@@ -689,11 +696,15 @@ void VectorPursuitController::rotateToHeading(
   linear_vel = 0.0;
   const double sign = angle_to_path > 0.0 ? 1.0 : -1.0;
   angular_vel = sign * rotate_to_heading_angular_vel_;
+  angular_vel = applyAngularAccelerationLimit(angular_vel, curr_speed.angular.z);
+}
 
-  const double & dt = control_duration_;
-  const double min_feasible_angular_speed = curr_speed.angular.z - max_angular_accel_ * dt;
-  const double max_feasible_angular_speed = curr_speed.angular.z + max_angular_accel_ * dt;
-  angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
+double VectorPursuitController::applyAngularAccelerationLimit(
+  double angular_vel, double curr_angular_vel) const
+{
+  const double max_delta = max_angular_accel_ * control_duration_;
+  return std::clamp(
+    angular_vel, curr_angular_vel - max_delta, curr_angular_vel + max_delta);
 }
 
 void VectorPursuitController::applyAngularBraking(

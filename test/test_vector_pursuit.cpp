@@ -75,6 +75,11 @@ public:
     return shouldRotateToPath(target_pose, angle_to_path, sign);
   }
 
+  double applyAngularAccelerationLimitWrapper(double angular_vel, double curr_angular_vel)
+  {
+    return applyAngularAccelerationLimit(angular_vel, curr_angular_vel);
+  }
+
   void rotateToHeadingWrapper(
     double & linear_vel, double & angular_vel,
     const double & angle_to_path, const geometry_msgs::msg::Twist & curr_speed)
@@ -254,6 +259,31 @@ TEST(VectorPursuitTest, lookaheadAPI)
   dist = 11.0;
   pt = ctrl->getLookAheadPointWrapper(dist, path);
   EXPECT_EQ(pt.pose.position.x, 10.0);
+}
+
+TEST(VectorPursuitTest, angularAccelerationLimit) {
+  auto ctrl = std::make_shared<Controller>();
+  auto node = std::make_shared<nav2::LifecycleNode>("testVP");
+  std::string name = "PathFollower";
+  auto tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>("fake_costmap");
+  rclcpp_lifecycle::State state;
+  costmap->on_configure(state);
+  // max_angular_accel default 3.2 rad/s^2; control_duration default 1/20 = 0.05 s
+  // => max delta per cycle = 0.16 rad/s
+  ctrl->configure(node, name, tf, costmap);
+
+  // within one step's reach: passes through unchanged
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(0.1, 0.0), 0.1, 1e-9);
+
+  // large positive jump from rest: clamped to +max delta
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(5.0, 0.0), 0.16, 1e-9);
+
+  // large negative jump from rest: clamped to -max delta
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(-5.0, 0.0), -0.16, 1e-9);
+
+  // clamp is relative to the current angular speed, not zero
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(5.0, 1.0), 1.16, 1e-9);
 }
 
 TEST(VectorPursuitTest, calcTurnRadius) {
