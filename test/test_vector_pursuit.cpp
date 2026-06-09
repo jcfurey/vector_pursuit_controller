@@ -294,7 +294,9 @@ TEST(VectorPursuitTest, calcTurnRadius) {
 
   EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 0.05, 0.01);
 
-  // beside, rotated 90 degrees
+  // beside, heading reversed: the semicircle through (0, 0.1) naturally ends
+  // pointing backward, so this is pure-pursuit-consistent and must return
+  // exactly the pure-pursuit radius d^2 / (2y) = 0.05
   carrot.pose.position.x = 0.0;
   carrot.pose.position.y = 0.1;
 
@@ -302,7 +304,44 @@ TEST(VectorPursuitTest, calcTurnRadius) {
   tf2_quat.setRPY(0, 0, -M_PI);
   carrot.pose.orientation = tf2::toMsg(tf2_quat);
 
-  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 0.04, 0.01);
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 0.05, 1e-6);
+
+  // pure-pursuit consistency: when the target heading equals the natural end
+  // heading of the tangent arc (2 * atan2(y, x)), the screw blend must reduce
+  // to pure pursuit exactly, for any k: radius = d^2 / (2y)
+  carrot.pose.position.x = 2.0;
+  carrot.pose.position.y = 2.0;
+  tf2_quat.setRPY(0, 0, M_PI / 2);
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 2.0, 1e-6);
+
+  // mirror symmetry: the reflected geometry must give the identical radius
+  carrot.pose.position.y = -2.0;
+  tf2_quat.setRPY(0, 0, -M_PI / 2);
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 2.0, 1e-6);
+
+  // near-straight with a leftward target heading: the heading term must pull
+  // the radius down to a finite turn (k * phi / (k * phi + residual) * d^2/2y
+  // with k = 8, phi = 2 * atan2(0.01, 1): radius ~= 12.5), not blow up or
+  // fight the heading as the previous formulation did
+  carrot.pose.position.x = 1.0;
+  carrot.pose.position.y = 0.01;
+  tf2_quat.setRPY(0, 0, 0.5);
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 12.5, 0.1);
+
+  // zero-total-rotation pole (k * phi + residual == 0): a pure-translation
+  // screw — must degrade to straight-line motion, not divide to inf/NaN
+  carrot.pose.position.x = 1.0;
+  carrot.pose.position.y = std::tan(0.1);  // phi = 0.2
+  tf2_quat.setRPY(0, 0, 0.2 - 8.0 * 0.2);  // residual = -k * phi
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_GT(ctrl->calcTurningRadiusWrappper(carrot), 1.0e6);
 }
 
 TEST(VectorPursuitTest, rotateTests)

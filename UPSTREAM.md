@@ -70,6 +70,52 @@ Lyrical container (the `docker/` infrastructure added on this branch).
 
 `4cb3a8e` resolves known follow-ups #1 and #4 below.
 
+## Upstream comparison & the calcTurningRadius geometry fix
+
+Upstream (`blackcoffeerobotics`) has not moved since the last sync:
+their `jazzy` (2.0.0) still equals our sync base `45e3dd6` (a clean
+ancestor of this branch), and their default branch `master` is the
+diverged 1.0.x line. That line carries one substantive fix the 2.0.0
+lineage never received: `5886046` *"Fixed angle calculations and out
+of bounds errors"*, touching `calcTurningRadius`.
+
+Investigating it showed **both** formulations are geometrically wrong.
+`phi` must be the rotation angle of the pure-pursuit translation screw
+— the arc swept along the circle tangent to the robot heading through
+the target — because the screw blend must reduce to pure pursuit
+(`radius = d²/2y`) whenever the target heading equals the arc's natural
+end heading, for any `k`. By the tangent-chord (inscribed angle)
+identity that sweep is simply `2 * atan2(y, x)`. Numerically:
+
+| case (x, y, θ_t = sweep)  | true R | 2.0.0 formula | master `5886046` | chord fix |
+|---------------------------|--------|---------------|------------------|-----------|
+| (2, 2, π/2)               | 2.000  | 2.867         | 2.182            | 2.000     |
+| (2, −2, −π/2)             | 2.000  | 2.867         | 2.400 (asymmetric!) | 2.000  |
+| (1, 1, π/2)               | 1.000  | 1.600         | 1.091            | 1.000     |
+
+Worse, in the near-straight regime (the dominant operating mode) the
+2.0.0 formula produced `phi ≈ −π` where geometry gives `phi ≈ 0`, so
+the target-heading term entered the screw blend with an effectively
+inverted sign — the heading-awareness that distinguishes Vector
+Pursuit from Pure Pursuit was working backwards precisely where the
+controller spends most of its time. The existing unit tests could not
+catch any of this: with an identity carrot orientation `term_1`
+collapses to `k/(k−1)` for *any* nonzero `phi`.
+
+The fix also replaces the raw `(k−1)·phi + θ_t` denominator with
+`k·phi + shortest_angular_distance(phi, θ_t)` — algebraically equal
+where `|θ_t − phi| ≤ π` but wrap-safe at ±π (a reversed target heading
+no longer gives two different radii depending on the sign of the ±π
+representation). The zero-total-rotation pole (pure-translation screw)
+degrades to straight-line motion, preserving the `4cb3a8e` guard.
+New unit tests pin pure-pursuit consistency, mirror symmetry, the
+near-straight heading response, and the pole.
+
+The 1.0.x line's other unique commit (`4e5c79f`, Ackermann constraint
+test) targets the pre-2.0 test fixture API and was not ported; the
+min-turning-radius clamp it exercises is covered by the existing
+`calcTurnRadius` "directly behind" case.
+
 ## ROS 2 distro support
 
 Verified 2026-06-09 in the official `ros:<distro>-ros-base` images

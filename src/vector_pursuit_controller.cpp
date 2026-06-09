@@ -271,19 +271,29 @@ double VectorPursuitController::calcTurningRadius(
   double turning_radius;
   if (allow_reversing_ || target_pose.pose.position.x >= 0.0) {
     if (std::abs(target_pose.pose.position.y) > 1e-6) {
-      double phi_1 = std::atan2(
-        (2 * std::pow(target_pose.pose.position.y, 2) - std::pow(distance, 2)),
-        (2 * target_pose.pose.position.x * target_pose.pose.position.y));
-      double phi_2 = std::atan2(std::pow(distance, 2), (2 * target_pose.pose.position.y));
-      double phi = angles::normalize_angle(phi_1 - phi_2);
-      // The denominator crosses zero for real geometries (phi ==
-      // -target_angle / (k - 1)); treat that pole as straight-line motion
-      // like the directly-ahead case rather than dividing through to inf/NaN.
-      double denominator = ((k_ - 1) * phi) + target_angle;
-      if (std::abs(denominator) < 1e-9) {
+      // phi is the rotation angle of the pure-pursuit translation screw:
+      // the signed arc swept along the circle that is tangent to the robot
+      // heading at the origin and passes through the target. By the
+      // tangent-chord (inscribed angle) identity that sweep is exactly
+      // twice the chord bearing — no center geometry needed. (Both the
+      // previous formulation here and upstream master's 5886046 variant
+      // disagreed with this geometry; neither reduced to pure pursuit when
+      // the target heading matched the arc, see UPSTREAM.md.)
+      double phi = 2.0 * std::atan2(
+        target_pose.pose.position.y, target_pose.pose.position.x);
+      // Total rotation of the combined screw: k * phi for the translation
+      // screw plus the shortest heading correction from the arc's natural
+      // end heading (phi) to the target heading. Equivalent to the thesis
+      // form (k - 1) * phi + target_angle, but wrap-safe at +/-pi.
+      double total_rotation = k_ * phi +
+        angles::shortest_angular_distance(phi, target_angle);
+      // The total rotation crosses zero for real geometries; that pole is
+      // a pure-translation screw, so treat it as straight-line motion like
+      // the directly-ahead case rather than dividing through to inf/NaN.
+      if (std::abs(total_rotation) < 1e-9) {
         turning_radius = std::numeric_limits<double>::max();
       } else {
-        double term_1 = (k_ * phi) / denominator;
+        double term_1 = (k_ * phi) / total_rotation;
         double term_2 = std::pow(distance, 2) / (2 * target_pose.pose.position.y);
         turning_radius = std::abs(term_1 * term_2);
       }
