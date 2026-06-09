@@ -346,12 +346,26 @@ TEST(VectorPursuitTest, calcTurnRadius) {
 
   EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 2.0, 1e-6);
 
-  // mirror symmetry: the reflected geometry must give the identical radius
+  // mirror symmetry: the reflected geometry gives the same magnitude with the
+  // opposite sign (turning_radius is signed: -ve => screw center on the -y
+  // side, i.e. a right turn toward the carrot)
   carrot.pose.position.y = -2.0;
   tf2_quat.setRPY(0, 0, -M_PI / 2);
   carrot.pose.orientation = tf2::toMsg(tf2_quat);
 
-  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 2.0, 1e-6);
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), -2.0, 1e-6);
+
+  // heading term dominates: a carrot slightly to the LEFT (y > 0) with a
+  // desired heading that pulls hard the other way yields a screw center on
+  // the far (-y) side, so the signed radius is negative even though y > 0.
+  // computeVelocityCommands detects this (radius * y < 0) and rotates to
+  // heading instead of arcing away from the path.
+  carrot.pose.position.x = 2.0;
+  carrot.pose.position.y = 0.1;
+  tf2_quat.setRPY(0, 0, -0.75);
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_LT(ctrl->calcTurningRadiusWrappper(carrot), 0.0);
 
   // near-straight with a leftward target heading: the heading term must pull
   // the radius down to a finite turn (k * phi / (k * phi + residual) * d^2/2y

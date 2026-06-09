@@ -267,7 +267,10 @@ double VectorPursuitController::calcTurningRadius(
   // Calculate angle to lookahead point
   double target_angle = angles::normalize_angle(tf2::getYaw(target_pose.pose.orientation));
   double distance = std::hypot(target_pose.pose.position.x, target_pose.pose.position.y);
-  // Compute turning radius (screw center)
+  // Compute turning radius (screw center). The result is SIGNED: positive
+  // when the screw center lies on the +y side (left/CCW turn), negative on
+  // the -y side. The sign carries the turn direction, so callers divide by
+  // it directly instead of re-deriving the direction from the target's side.
   double turning_radius;
   if (allow_reversing_ || target_pose.pose.position.x >= 0.0) {
     if (std::abs(target_pose.pose.position.y) > 1e-6) {
@@ -291,23 +294,32 @@ double VectorPursuitController::calcTurningRadius(
       // a pure-translation screw, so treat it as straight-line motion like
       // the directly-ahead case rather than dividing through to inf/NaN.
       if (std::abs(total_rotation) < 1e-9) {
-        turning_radius = std::numeric_limits<double>::max();
+        turning_radius = std::copysign(
+          std::numeric_limits<double>::max(), target_pose.pose.position.y);
       } else {
         double term_1 = (k_ * phi) / total_rotation;
         double term_2 = std::pow(distance, 2) / (2 * target_pose.pose.position.y);
-        turning_radius = std::abs(term_1 * term_2);
+        // Signed: term_2 carries sign(y); a negative term_1 (the heading
+        // correction dominating the arc) flips the screw to the far side,
+        // which the caller detects and handles via rotate-to-heading.
+        turning_radius = term_1 * term_2;
       }
     } else {
-      // Handle case when target is directly ahead
-      turning_radius = std::numeric_limits<double>::max();
+      // Target directly ahead: straight-line motion (effectively infinite
+      // radius), signed by the target's side so the caller reads no flip.
+      turning_radius = std::copysign(
+        std::numeric_limits<double>::max(), target_pose.pose.position.y);
     }
   } else {
-    // If lookahead point is behind the robot, set turning radius to minimum
-    turning_radius = min_turning_radius_;
+    // Lookahead point is behind the robot: turn as sharply as allowed,
+    // toward the target's side.
+    turning_radius = std::copysign(min_turning_radius_, target_pose.pose.position.y);
   }
 
-  // Limit turning radius to avoid extremely sharp turns
-  turning_radius = std::max(turning_radius, min_turning_radius_);
+  // Limit the turning radius magnitude to avoid extremely sharp turns,
+  // preserving the sign (turn direction).
+  turning_radius = std::copysign(
+    std::max(std::abs(turning_radius), min_turning_radius_), turning_radius);
   RCLCPP_DEBUG(logger_, "Turning radius: %f", turning_radius);
 
   return turning_radius;
@@ -392,25 +404,34 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   } else {
     double turning_radius = calcTurningRadius(lookahead_point);
 
-    // Compute linear velocity based on path curvature
-    double curvature = 1.0 / turning_radius;
+    if (turning_radius * lookahead_point.pose.position.y < 0.0) {
+      // The desired-heading term dominates the screw blend so the arc curves
+      // away from the path point (signed radius on the far side from the
+      // target). Arcing away is degenerate; rotate toward the target heading
+      // instead and resume tracking once the heading error shrinks.
+      double angle_to_target = tf2::getYaw(lookahead_point.pose.orientation);
+      rotateToHeading(linear_vel, angular_vel, angle_to_target, last_cmd_vel_);
+    } else {
+      // Compute linear velocity based on path curvature
+      double curvature = 1.0 / turning_radius;
 
-    applyConstraints(
-      curvature, last_cmd_vel_,
-      costAtPose(pose.pose.position.x, pose.pose.position.y), linear_vel, transformed_plan, sign);
+      applyConstraints(
+        curvature, last_cmd_vel_,
+        costAtPose(pose.pose.position.x, pose.pose.position.y), linear_vel,
+        transformed_plan, sign);
 
-    // Compute angular velocity
-    angular_vel = linear_vel / turning_radius;
-    if (lookahead_point.pose.position.y < 0) {
-      angular_vel *= -1;
+      // Angular velocity from the signed curvature; the sign of turning_radius
+      // already encodes the turn direction (and composes correctly with a
+      // negative linear_vel when reversing), so no separate flip is needed.
+      angular_vel = linear_vel / turning_radius;
+
+      // Bound the angular acceleration. On a platform with a small/zero
+      // min_turning_radius (e.g. a zero-turn differential drive) a sharp
+      // lookahead yields a small radius and thus a large angular_vel that
+      // can jump between cycles; unlike the rotate-to-heading paths this one
+      // was previously unbounded, commanding infeasible angular jerk.
+      angular_vel = applyAngularAccelerationLimit(angular_vel, last_cmd_vel_.angular.z);
     }
-
-    // Bound the angular acceleration. On a platform with a small/zero
-    // min_turning_radius (e.g. a zero-turn differential drive) a sharp
-    // lookahead yields a small radius and thus a large angular_vel that
-    // can jump between cycles; unlike the rotate-to-heading paths this one
-    // was previously unbounded, commanding infeasible angular jerk.
-    angular_vel = applyAngularAccelerationLimit(angular_vel, last_cmd_vel_.angular.z);
   }
 
   // Collision checking

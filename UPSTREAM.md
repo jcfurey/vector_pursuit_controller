@@ -111,6 +111,33 @@ degrades to straight-line motion, preserving the `4cb3a8e` guard.
 New unit tests pin pure-pursuit consistency, mirror symmetry, the
 near-straight heading response, and the pole.
 
+A follow-up audit (numeric verification in `/tmp` during review;
+results summarised here) confirmed the `phi` fix three ways: it equals
+the actual pure-pursuit arc heading change to machine precision; it is
+the unique value making the blend self-consistent (`term1 == 1` iff
+`θ_t == phi`, for every `k`); and the old second term reduced to
+`atan(R_pp)` — the arctangent of a length, i.e. a mis-derivation. The
+blend's screw-theory structure also checks out (correct `k → ∞` pure
+pursuit limit; curvature decomposes as `(k-1)/k·κ_pp +
+heading-correction/k`). The authoritative thesis (DTIC ADA468928) is
+403-blocked, so this verifies internal consistency and limits rather
+than byte-matching eq. 3.52.
+
+That audit also found a separate latent bug: `calcTurningRadius`
+returned `std::abs(...)` and the caller re-derived the turn direction
+from `sign(y)` alone, discarding `sign(term_1)`. When the heading
+correction dominates the arc (`term_1 < 0` — a near-straight carrot
+with a strongly opposing target heading), the screw center flips to
+the far side but the robot kept turning toward the carrot, commanding
+the wrong angular direction. Reachable mainly with
+`use_heading_from_path: true`; computed headings keep `term_1 > 0`.
+Fixed by returning a **signed** turning radius (sign = turn direction)
+and dividing by it directly. When the signed radius lands on the far
+side from the target (`radius * y < 0`), arcing away is degenerate, so
+the controller rotates toward the target heading instead. Unit test
+`calcTurnRadius` now pins the signed convention and the heading-
+dominated (far-side) case.
+
 The 1.0.x line's other unique commit (`4e5c79f`, Ackermann constraint
 test) targets the pre-2.0 test fixture API and was not ported; the
 min-turning-radius clamp it exercises is covered by the existing
