@@ -63,14 +63,6 @@ public:
     return calcTurningRadius(target_pose);
   }
 
-  static geometry_msgs::msg::Point circleSegmentIntersectionWrapper(
-    const geometry_msgs::msg::Point & p1,
-    const geometry_msgs::msg::Point & p2,
-    double r)
-  {
-    return circleSegmentIntersection(p1, p2, r);
-  }
-
   geometry_msgs::msg::PoseStamped getLookAheadPointWrapper(
     const double & dist, const nav_msgs::msg::Path & path)
   {
@@ -145,130 +137,6 @@ TEST(VectorPursuitTest, basicAPI)
   ctrl->setSpeedLimit(nav2_costmap_2d::NO_SPEED_LIMIT, true);
   EXPECT_EQ(ctrl->getSpeed(), base_speed);
 }
-
-using CircleSegmentIntersectionParam = std::tuple<
-  std::pair<double, double>,
-  std::pair<double, double>,
-  double,
-  std::pair<double, double>
->;
-
-class CircleSegmentIntersectionTest
-  : public ::testing::TestWithParam<CircleSegmentIntersectionParam>
-{};
-
-TEST_P(CircleSegmentIntersectionTest, circleSegmentIntersection)
-{
-  auto pair1 = std::get<0>(GetParam());
-  auto pair2 = std::get<1>(GetParam());
-  auto r = std::get<2>(GetParam());
-  auto expected_pair = std::get<3>(GetParam());
-  auto pair_to_point = [](std::pair<double, double> p) -> geometry_msgs::msg::Point {
-      geometry_msgs::msg::Point point;
-      point.x = p.first;
-      point.y = p.second;
-      point.z = 0.0;
-      return point;
-    };
-  auto p1 = pair_to_point(pair1);
-  auto p2 = pair_to_point(pair2);
-  auto actual = Controller::circleSegmentIntersectionWrapper(p1, p2, r);
-  auto expected_point = pair_to_point(expected_pair);
-  EXPECT_DOUBLE_EQ(actual.x, expected_point.x);
-  EXPECT_DOUBLE_EQ(actual.y, expected_point.y);
-  // Expect that the intersection point is actually r away from the origin
-  EXPECT_DOUBLE_EQ(r, std::hypot(actual.x, actual.y));
-}
-
-INSTANTIATE_TEST_SUITE_P(
-  InterpolationTest,
-  CircleSegmentIntersectionTest,
-  testing::Values(
-    // Origin to the positive X axis
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {2.0, 0.0},
-  1.0,
-  {1.0, 0.0}
-},
-    // Origin to the negative X axis
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {-2.0, 0.0},
-  1.0,
-  {-1.0, 0.0}
-},
-    // Origin to the positive Y axis
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {0.0, 2.0},
-  1.0,
-  {0.0, 1.0}
-},
-    // Origin to the negative Y axis
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {0.0, -2.0},
-  1.0,
-  {0.0, -1.0}
-},
-    // non-origin to the X axis with non-unit circle, with the second point inside
-    CircleSegmentIntersectionParam{
-  {4.0, 0.0},
-  {-1.0, 0.0},
-  2.0,
-  {2.0, 0.0}
-},
-    // non-origin to the Y axis with non-unit circle, with the second point inside
-    CircleSegmentIntersectionParam{
-  {0.0, 4.0},
-  {0.0, -0.5},
-  2.0,
-  {0.0, 2.0}
-},
-    // origin to the positive X axis, on the circle
-    CircleSegmentIntersectionParam{
-  {2.0, 0.0},
-  {0.0, 0.0},
-  2.0,
-  {2.0, 0.0}
-},
-    // origin to the positive Y axis, on the circle
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {0.0, 2.0},
-  2.0,
-  {0.0, 2.0}
-},
-    // origin to the upper-right quadrant (3-4-5 triangle)
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {6.0, 8.0},
-  5.0,
-  {3.0, 4.0}
-},
-    // origin to the lower-left quadrant (3-4-5 triangle)
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {-6.0, -8.0},
-  5.0,
-  {-3.0, -4.0}
-},
-    // origin to the upper-left quadrant (3-4-5 triangle)
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {-6.0, 8.0},
-  5.0,
-  {-3.0, 4.0}
-},
-    // origin to the lower-right quadrant (3-4-5 triangle)
-    CircleSegmentIntersectionParam{
-  {0.0, 0.0},
-  {6.0, -8.0},
-  5.0,
-  {3.0, -4.0}
-}
-));
 
 TEST(VectorPursuitTest, lookaheadAPI)
 {
@@ -375,10 +243,12 @@ TEST(VectorPursuitTest, lookaheadAPI)
     path.poses[i].pose.position.x = static_cast<double>(i + 1);
   }
 
-  // if the first pose is ahead of the lookahead distance, take the first pose discretely
+  // lookahead is measured along the path from its first pose (matching
+  // nav2_util::getLookAheadPoint), so a path starting away from the robot
+  // interpolates within its first segment rather than snapping to pose 0
   dist = 0.7;
   pt = ctrl->getLookAheadPointWrapper(dist, path);
-  EXPECT_EQ(pt.pose.position.x, 1.0);
+  EXPECT_EQ(pt.pose.position.x, 1.7);
 
   // If no pose is far enough, take the last pose discretely
   dist = 11.0;
@@ -619,7 +489,6 @@ TEST(VectorPursuitTest, testDynamicParameter)
       rclcpp::Parameter("test.min_approach_linear_velocity", 0.6),
       rclcpp::Parameter("test.cost_scaling_dist", 2.0),
       rclcpp::Parameter("test.cost_scaling_gain", 4.0),
-      rclcpp::Parameter("test.inflation_cost_scaling_factor", -1.0),
       rclcpp::Parameter("test.inflation_cost_scaling_factor", 1.0),
       rclcpp::Parameter("test.use_collision_detection", true),
       rclcpp::Parameter("test.use_velocity_scaled_lookahead_dist", false),
@@ -664,6 +533,16 @@ TEST(VectorPursuitTest, testDynamicParameter)
   EXPECT_EQ(node->get_parameter("test.use_interpolation").as_bool(), true);
   EXPECT_EQ(node->get_parameter("test.use_heading_from_path").as_bool(), false);
   EXPECT_EQ(node->get_parameter("test.allow_reversing").as_bool(), true);
+
+  // An invalid inflation_cost_scaling_factor is rejected outright (not
+  // silently ignored), and the previous value is retained.
+  auto rejected = rec_param->set_parameters_atomically(
+    {rclcpp::Parameter("test.inflation_cost_scaling_factor", -1.0)});
+  rclcpp::spin_until_future_complete(
+    node->get_node_base_interface(),
+    rejected);
+  EXPECT_FALSE(rejected.get().successful);
+  EXPECT_EQ(node->get_parameter("test.inflation_cost_scaling_factor").as_double(), 1.0);
 }
 
 class ComputeVelocityCommandsTest : public ::testing::Test

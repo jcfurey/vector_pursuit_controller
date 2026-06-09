@@ -31,7 +31,6 @@
 #include "pluginlib/class_list_macros.hpp"
 #include "nav2_util/odometry_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
-// #include "geometry_msgs/msg/pose2_d.hpp"
 #include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
@@ -141,20 +140,6 @@ protected:
    * @return lookahead distance
    */
   double getLookAheadDistance(const geometry_msgs::msg::Twist &);
-
-  /**
-   * @brief Find the intersection a circle and a line segment.
-   * This assumes the circle is centered at the origin.
-   * If no intersection is found, a floating point error will occur.
-   * @param p1 first endpoint of line segment
-   * @param p2 second endpoint of line segment
-   * @param r radius of circle
-   * @return point of intersection
-   */
-  static geometry_msgs::msg::Point circleSegmentIntersection(
-    const geometry_msgs::msg::Point & p1,
-    const geometry_msgs::msg::Point & p2,
-    double r);
 
   /**
    * @brief checks for collision at projected pose

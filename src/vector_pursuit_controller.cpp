@@ -26,6 +26,7 @@
 #include "angles/angles.h"
 #include "nav2_core/controller_exceptions.hpp"
 #include "nav2_ros_common/node_utils.hpp"
+#include "nav2_util/controller_utils.hpp"
 #include "nav2_util/path_utils.hpp"
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
 
@@ -275,9 +276,17 @@ double VectorPursuitController::calcTurningRadius(
         (2 * target_pose.pose.position.x * target_pose.pose.position.y));
       double phi_2 = std::atan2(std::pow(distance, 2), (2 * target_pose.pose.position.y));
       double phi = angles::normalize_angle(phi_1 - phi_2);
-      double term_1 = (k_ * phi) / (((k_ - 1) * phi) + target_angle);
-      double term_2 = std::pow(distance, 2) / (2 * target_pose.pose.position.y);
-      turning_radius = std::abs(term_1 * term_2);
+      // The denominator crosses zero for real geometries (phi ==
+      // -target_angle / (k - 1)); treat that pole as straight-line motion
+      // like the directly-ahead case rather than dividing through to inf/NaN.
+      double denominator = ((k_ - 1) * phi) + target_angle;
+      if (std::abs(denominator) < 1e-9) {
+        turning_radius = std::numeric_limits<double>::max();
+      } else {
+        double term_1 = (k_ * phi) / denominator;
+        double term_2 = std::pow(distance, 2) / (2 * target_pose.pose.position.y);
+        turning_radius = std::abs(term_1 * term_2);
+      }
     } else {
       // Handle case when target is directly ahead
       turning_radius = std::numeric_limits<double>::max();
@@ -331,7 +340,9 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   }
 
   // Publish the base-frame plan being tracked for visualization
-  global_path_pub_->publish(transformed_plan);
+  if (global_path_pub_->get_subscription_count() > 0) {
+    global_path_pub_->publish(transformed_plan);
+  }
 
   // Find look ahead distance and point on path
   double lookahead_dist = getLookAheadDistance(last_cmd_vel_);
@@ -347,7 +358,9 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   auto lookahead_point = getLookAheadPoint(lookahead_dist, transformed_plan);
 
   // Publish target point for visualization
-  target_pub_->publish(lookahead_point);
+  if (target_pub_->get_subscription_count() > 0) {
+    target_pub_->publish(lookahead_point);
+  }
 
   // Setting the velocity direction
   double sign = 1.0;
@@ -509,10 +522,15 @@ void VectorPursuitController::applyConstraints(
     {linear_vel, max_vel_for_curve, cost_vel,
       std::abs(curr_speed.linear.x) + max_linear_accel_ * control_duration_});
 
+  // Ensure the linear velocity is not below the minimum allowed linear
+  // velocity. This must happen BEFORE approach scaling: applying the floor
+  // afterwards would override the goal-approach deceleration and carry
+  // min_linear_velocity_ into the goal. Near the goal the approach scaling
+  // governs, bounded below by min_approach_linear_velocity_ instead.
+  linear_vel = std::max(linear_vel, min_linear_velocity_);
+
   applyApproachVelocityScaling(path, linear_vel);
 
-  // Ensure the linear velocity is not below the minimum allowed linear velocity
-  linear_vel = std::max(linear_vel, min_linear_velocity_);
   linear_vel = sign * linear_vel;
 }
 
@@ -539,41 +557,6 @@ bool VectorPursuitController::shouldRotateToGoalHeading(
   return use_rotate_to_heading_ && dist_to_goal < goal_dist_tol_;
 }
 
-geometry_msgs::msg::Point VectorPursuitController::circleSegmentIntersection(
-  const geometry_msgs::msg::Point & p1,
-  const geometry_msgs::msg::Point & p2,
-  double r)
-{
-  // Formula for intersection of a line with a circle centered at the origin,
-  // modified to always return the point that is on the segment between the two points.
-  // https://mathworld.wolfram.com/Circle-LineIntersection.html
-  // This works because the poses are transformed into the robot frame.
-  // This can be derived from solving the system of equations of a line and a circle
-  // which results in something that is just a reformulation of the quadratic formula.
-  // Interactive illustration in doc/circle-segment-intersection.ipynb as well as at
-  // https://www.desmos.com/calculator/td5cwbuocd
-  double x1 = p1.x;
-  double x2 = p2.x;
-  double y1 = p1.y;
-  double y2 = p2.y;
-
-  double dx = x2 - x1;
-  double dy = y2 - y1;
-  double dr2 = dx * dx + dy * dy;
-  double D = x1 * y2 - x2 * y1;
-
-  // Augmentation to only return point within segment
-  double d1 = x1 * x1 + y1 * y1;
-  double d2 = x2 * x2 + y2 * y2;
-  double dd = d2 - d1;
-
-  geometry_msgs::msg::Point p;
-  double sqrt_term = std::sqrt(r * r * dr2 - D * D);
-  p.x = (D * dy + std::copysign(1.0, dd) * dx * sqrt_term) / dr2;
-  p.y = (-D * dx + std::copysign(1.0, dd) * dy * sqrt_term) / dr2;
-  return p;
-}
-
 geometry_msgs::msg::Quaternion VectorPursuitController::getOrientation(
   const geometry_msgs::msg::Point & p1,
   const geometry_msgs::msg::Point & p2)
@@ -591,54 +574,58 @@ geometry_msgs::msg::PoseStamped VectorPursuitController::getLookAheadPoint(
   const double & lookahead_dist,
   const nav_msgs::msg::Path & transformed_plan)
 {
-  // Find the first pose which is at a distance greater than the lookahead distance
-  auto goal_pose_it = std::find_if(
-    transformed_plan.poses.begin(), transformed_plan.poses.end(), [&](const auto & ps) {
-      return std::hypot(ps.pose.position.x, ps.pose.position.y) >= lookahead_dist;
-    });
+  const auto & poses = transformed_plan.poses;
+
+  // Find the first pose past the lookahead distance, measured along the path
+  // (matching nav2_util::getLookAheadPoint) rather than straight-line from
+  // the robot, so the lookahead point cannot skip past curvy segments.
+  auto goal_pose_it = poses.end();
+  double path_dist = 0.0;
+  double interpolation_dist = 0.0;
+  for (size_t i = 1; i < poses.size(); i++) {
+    const double d = nav2_util::geometry_utils::euclidean_distance(poses[i - 1], poses[i]);
+    if (path_dist + d >= lookahead_dist) {
+      goal_pose_it = poses.begin() + i;
+      interpolation_dist = lookahead_dist - path_dist;
+      break;
+    }
+    path_dist += d;
+  }
 
   geometry_msgs::msg::PoseStamped pose;  // pose to return
 
   // If no pose is far enough, take the last pose discretely
-  if (goal_pose_it == transformed_plan.poses.end()) {
-    pose = *(std::prev(transformed_plan.poses.end()));  // dereference the last element pointer
+  if (goal_pose_it == poses.end()) {
+    pose = poses.back();
 
     // if heading needs to be computed from path,
     // find the angle of the vector from second last to last pose
     // (requires at least two poses; with only one, fall back to the
     // pose's own orientation rather than walking off the front of the
     // container)
-    if (!use_heading_from_path_ && transformed_plan.poses.size() >= 2) {
+    if (!use_heading_from_path_ && poses.size() >= 2) {
       pose.pose.orientation = getOrientation(
-        std::prev(std::prev(transformed_plan.poses.end()))->pose.position,
-        std::prev(transformed_plan.poses.end())->pose.position);
-    }
-
-    // if the first pose is ahead of the lookahead distance, take the first pose discretely
-  } else if (goal_pose_it == transformed_plan.poses.begin()) {
-    pose = *(goal_pose_it);  // dereference the first element pointer
-
-    // if heading needs to be computed from path,
-    // find the angle of the vector from first to second pose
-    if (!use_heading_from_path_) {
-      pose.pose.orientation = getOrientation(
-        transformed_plan.poses.begin()->pose.position,
-        std::next(transformed_plan.poses.begin())->pose.position);
+        std::prev(std::prev(poses.end()))->pose.position,
+        std::prev(poses.end())->pose.position);
     }
 
     // if interpolation is enabled:
-    // Find the point on the line segment between the two poses
-    // that is exactly the lookahead distance away from the robot pose (the origin)
-    // This can be found with a closed form for the intersection of a segment and a circle
-    // Because of the way we did the std::find_if, prev_pose is guaranteed to be
-    // inside the circle, and goal_pose is guaranteed to be outside the circle.
+    // Find the point on the segment between the bracketing poses at exactly
+    // the remaining lookahead distance along it. The selection loop above
+    // guarantees the segment spans that distance. A degenerate segment
+    // (duplicate poses) would divide by zero in the interpolation, so take
+    // the pose discretely instead.
   } else if (use_interpolation_) {
     auto prev_pose_it = std::prev(goal_pose_it);
+    const double segment_dist =
+      nav2_util::geometry_utils::euclidean_distance(*prev_pose_it, *goal_pose_it);
 
-    pose.pose.position = circleSegmentIntersection(
-      prev_pose_it->pose.position,
-      goal_pose_it->pose.position, lookahead_dist);
-
+    if (segment_dist > 1e-9) {
+      pose.pose.position = nav2_util::linearInterpolation(
+        prev_pose_it->pose.position, goal_pose_it->pose.position, interpolation_dist);
+    } else {
+      pose.pose.position = goal_pose_it->pose.position;
+    }
     pose.header.frame_id = prev_pose_it->header.frame_id;
     pose.header.stamp = goal_pose_it->header.stamp;
 
@@ -669,7 +656,7 @@ geometry_msgs::msg::PoseStamped VectorPursuitController::getLookAheadPoint(
     pose = *(goal_pose_it);
 
     // if heading needs to be computed from path,
-    // find the angle of the vector from second last to last pose
+    // find the angle of the vector from prev to goal pose
     if (!use_heading_from_path_) {
       pose.pose.orientation = getOrientation(
         std::prev(goal_pose_it)->pose.position, goal_pose_it->pose.position);
@@ -729,7 +716,9 @@ bool VectorPursuitController::isCollisionImminent(
     return true;
   }
 
-  // visualization messages
+  // visualization messages; skip accumulating and publishing the arc when
+  // nothing is subscribed (this runs in the control loop at 20-100 Hz)
+  const bool publish_arc = target_arc_pub_->get_subscription_count() > 0;
   nav_msgs::msg::Path arc_pts_msg;
   arc_pts_msg.header.frame_id = costmap_ros_->getGlobalFrameID();
   arc_pts_msg.header.stamp = robot_pose.header.stamp;
@@ -788,19 +777,25 @@ bool VectorPursuitController::isCollisionImminent(
     }
 
     // store it for visualization
-    pose_msg.pose.position.x = curr_pose.x;
-    pose_msg.pose.position.y = curr_pose.y;
-    pose_msg.pose.position.z = 0.01;
-    arc_pts_msg.poses.push_back(pose_msg);
+    if (publish_arc) {
+      pose_msg.pose.position.x = curr_pose.x;
+      pose_msg.pose.position.y = curr_pose.y;
+      pose_msg.pose.position.z = 0.01;
+      arc_pts_msg.poses.push_back(pose_msg);
+    }
 
     // check for collision at the projected pose
     if (inCollision(curr_pose.x, curr_pose.y, curr_pose.theta)) {
-      target_arc_pub_->publish(arc_pts_msg);
+      if (publish_arc) {
+        target_arc_pub_->publish(arc_pts_msg);
+      }
       return true;
     }
   }
 
-  target_arc_pub_->publish(arc_pts_msg);
+  if (publish_arc) {
+    target_arc_pub_->publish(arc_pts_msg);
+  }
 
   return false;
 }
@@ -909,6 +904,7 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
   std::vector<rclcpp::Parameter> parameters)
 {
   rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
   std::lock_guard<std::mutex> lock_reinit(mutex_);
 
   for (auto parameter : parameters) {
@@ -918,9 +914,14 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
     if (type == ParameterType::PARAMETER_DOUBLE) {
       if (name == plugin_name_ + ".inflation_cost_scaling_factor") {
         if (parameter.as_double() <= 0.0) {
+          // Reject the update outright (the operator gets feedback through
+          // the parameter API) rather than warning into the log and keeping
+          // the old value, which looks like the change applied.
           RCLCPP_WARN(
             logger_, "The value inflation_cost_scaling_factor is incorrectly set, "
-            "it should be >0. Ignoring parameter update.");
+            "it should be >0. Rejecting parameter update.");
+          result.successful = false;
+          result.reason = "inflation_cost_scaling_factor must be > 0";
           continue;
         }
         inflation_cost_scaling_factor_ = parameter.as_double();
@@ -994,7 +995,6 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
     use_rotate_to_heading_ = true;
   }
 
-  result.successful = true;
   return result;
 }
 
