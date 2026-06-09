@@ -1,0 +1,3 @@
+# Drop extra CA certificates (*.crt) here to have them trusted during the
+# Docker build (e.g. a corporate or sandbox egress-proxy CA). docker/build.sh
+# populates this automatically from the host; *.crt files are git-ignored.

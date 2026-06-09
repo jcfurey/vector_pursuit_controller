@@ -1,0 +1,9 @@
+.git
+.github
+install
+build
+log
+*.info
+*.gcda
+*.gcno
+coverage/
