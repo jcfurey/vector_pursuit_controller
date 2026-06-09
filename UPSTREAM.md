@@ -54,6 +54,22 @@ typing.
 Each commit message contains the *why* in detail; consult `git log`
 rather than restating it here.
 
+## Local divergence — Lyrical audit pass 2026-06-09
+
+A multi-angle review after the Lyrical migration (`157a4fb`), with
+fixes verified against a from-source nav2 `main` build inside the
+Lyrical container (the `docker/` infrastructure added on this branch).
+
+| Commit    | Category | Subject                                                              |
+|-----------|----------|----------------------------------------------------------------------|
+| `80888f7` | infra    | reproducible ROS 2 Lyrical Docker build (nav2 from source)           |
+| `9e68fcf` | infra    | scope rosdep to closure; apply toolchain patches after deps          |
+| `37980a2` | infra    | pin nav2 commit; build-only proxy CAs; layer split (~36s iteration)  |
+| `4cb3a8e` | fix      | path-integrated lookahead via nav2_util; min-velocity floor before approach scaling; turning-radius pole guard; atomic param rejection; publisher gating |
+| `(docs)`  | docs     | README defaults aligned with code; follow-ups below updated          |
+
+`4cb3a8e` resolves known follow-ups #1 and #4 below.
+
 ## Workspace integration notes
 
 - Wired up via `src/settings/params/navigation/nav2/behavior_trees/navigate_route_with_recovery.xml`
@@ -77,30 +93,28 @@ rather than restating it here.
 These were called out in the review but explicitly deferred — track
 if you re-open the file:
 
-1. **`circleSegmentIntersection` can still produce NaN** if a caller
-   ever calls it with a fully-disjoint segment/circle (no real root).
-   `getLookAheadPoint` is the only in-tree caller and only invokes it
-   with one endpoint inside, one outside the circle, so the
-   discriminant is non-negative by construction. Worth adding an
-   explicit check + nearest-endpoint fallback if the helper ever
-   becomes public-facing.
+1. ~~`circleSegmentIntersection` can still produce NaN~~ — resolved
+   in `4cb3a8e`: the local helper was removed outright;
+   `getLookAheadPoint` now selects by path-integrated distance and
+   interpolates with `nav2_util::linearInterpolation` (guarding
+   degenerate duplicate-pose segments), matching nav2 main semantics.
 2. **`shouldRotateToGoalHeading` checks the lookahead point**, not
    the actual end of the global plan. Fine when the lookahead has
    clipped to the end of the path (the common case), but pathological
    short-path situations could trigger it spuriously. Better signal
    would be `transformed_plan.poses.size() == 1 && dist_to_back <
    goal_dist_tol_` or pulling state from the goal_checker.
-3. **`global_plan_` is written by `setPlan` without taking `mutex_`**,
-   while `transformGlobalPlan` reads it under the lock. Safe under
-   nav2's default single-threaded executor; would need a fix if
-   `controller_server` is ever run with `use_realtime_priority` or a
-   multi-threaded executor.
-4. **`min_linear_velocity` floor overrides approach scaling.** Item
-   #10 in the review. Fixing it cleanly requires deciding whether
-   the floor should bypass *all* deceleration or only the
-   curvature/cost terms — a behavior change that needs operator
-   sign-off, so deferred. Mitigated for now by the workspace
-   integration note above (set it to 0).
+3. ~~`global_plan_` is written by `setPlan` without taking `mutex_`~~ —
+   moot since the Lyrical migration (`157a4fb`): `global_plan_` was
+   removed; plan handling lives in the controller server's path
+   handler and `newPathReceived()` is a no-op.
+4. ~~`min_linear_velocity` floor overrides approach scaling~~ —
+   resolved in `4cb3a8e`: the floor is applied before approach
+   scaling, so it bounds the curvature/cost/accel terms but the
+   goal-approach deceleration can go below it (bounded by
+   `min_approach_linear_velocity`). The workspace mitigation
+   (`min_linear_velocity: 0.0`) is no longer required, though still
+   harmless.
 
 ## Sync procedure
 

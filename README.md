@@ -67,6 +67,11 @@ These parameters are used to tune and control the behaviour of
 | Optional Reversing | `allow_reversing`                | Will move in reverse if the lookahead point is behind the robot. |
 
 ## Default Parameters
+
+The `FollowPath` values below are the controller's actual built-in defaults —
+what you get for any parameter you leave unset. For a tuned example
+configuration, see [`config/sample_nav2_params.yaml`](config/sample_nav2_params.yaml).
+
 ```yaml
 controller_server:
   ros__parameters:
@@ -95,34 +100,33 @@ controller_server:
     
     FollowPath:
       plugin: "vector_pursuit_controller::VectorPursuitController"
-      k: 5.0
+      k: 8.0
       desired_linear_vel: 0.5
-      min_turning_radius: 0.25
-      lookahead_dist: 1.0
-      min_lookahead_dist: 0.5
-      max_lookahead_dist: 1.5
+      min_turning_radius: 1.0
+      lookahead_dist: 0.6
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 0.5
+      rotate_to_heading_angular_vel: 1.8
       transform_tolerance: 0.1
       use_velocity_scaled_lookahead_dist: false
-      min_linear_velocity: 0.0
+      min_linear_velocity: 0.05
       min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 0.5
+      approach_velocity_scaling_dist: 1.0
       max_allowed_time_to_collision_up_to_target: 1.0
       use_collision_detection: true
       use_cost_regulated_linear_velocity_scaling: true
-      cost_scaling_dist: 0.5
+      cost_scaling_dist: 0.6
       cost_scaling_gain: 1.0
       inflation_cost_scaling_factor: 3.0
       use_rotate_to_heading: true
       allow_reversing: false
-      rotate_to_heading_min_angle: 0.5
-      max_angular_accel: 3.0
+      rotate_to_heading_min_angle: 0.785
+      max_angular_accel: 3.2
       max_linear_accel: 2.0
-      max_lateral_accel: 0.2
+      max_lateral_accel: 0.5
       use_interpolation: true
-      use_heading_from_path: false
-      approach_velocity_scaling_dist: 1.0
+      use_heading_from_path: true
 ```
 
 ## Quickstart Tutorial
