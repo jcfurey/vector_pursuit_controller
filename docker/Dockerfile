@@ -1,48 +1,69 @@
 # Reproducible ROS 2 Lyrical build of vector_pursuit_controller.
 #
 # ROS 2 Lyrical targets Ubuntu 26.04 (Resolute) and has no Nav2 binaries yet,
-# so this image builds the controller's Nav2 dependency closure from the
-# navigation2 'main' branch. Two small workarounds are applied for skew between
-# nav2 main and Lyrical's shipped toolchain (see docker/patches/apply_patches.sh).
+# so this image builds the controller's Nav2 dependency closure from source at
+# a pinned navigation2 commit. Two small workarounds are applied for skew
+# between nav2 main and Lyrical's shipped toolchain (see
+# docker/patches/apply_patches.sh).
 #
-# Build from the repository root:
+# Build from the repository root (docker/build.sh adds proxy-CA handling and
+# post-build verification):
+#     ./docker/build.sh
+# or directly:
 #     docker build -f docker/Dockerfile -t vpc-lyrical .
-# Or use docker/build.sh for automatic proxy-CA handling + verification.
+#
+# Layers are split so that editing controller source only rebuilds the final
+# stage (~1 min): nav2 clone and the dependency build are keyed on the pinned
+# commit and package.xml, not on the full source tree.
+
+# Build-only CA certificates. Empty by default; on a network behind a
+# TLS-intercepting proxy, override with:
+#     docker build --build-context hostcerts=/usr/local/share/ca-certificates ...
+# The certs are only visible inside individual RUN steps (via with-host-ca)
+# and are never written to an image layer.
+FROM scratch AS hostcerts
 
 FROM ros:lyrical-ros-base
-SHELL ["/bin/bash", "-c"]
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Optional: trust extra CA certificates (corporate / sandbox egress proxy).
-# Drop *.crt files into docker/certs/ before building; harmless when empty.
-COPY docker/certs/ /usr/local/share/ca-certificates/extra/
-RUN update-ca-certificates >/dev/null 2>&1 || true
-ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
-    GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
+COPY docker/with-host-ca.sh /usr/local/bin/with-host-ca
+RUN chmod +x /usr/local/bin/with-host-ca
 
-ARG NAV2_BRANCH=main
+# Nav2 source, pinned for reproducibility (no Lyrical binaries yet). Bump by
+# passing --build-arg NAV2_COMMIT=<sha> once a newer nav2 is known to build.
+ARG NAV2_COMMIT=374cd2556640586251b1e49a346f6c8d0cb76224
 WORKDIR /opt/ws
+RUN --mount=from=hostcerts,target=/hostcerts \
+    with-host-ca bash -c "\
+      git init -q src/navigation2 && cd src/navigation2 && \
+      git remote add origin https://github.com/ros-navigation/navigation2.git && \
+      git fetch -q --depth 1 origin ${NAV2_COMMIT} && \
+      git checkout -q FETCH_HEAD"
 
-# Nav2 source (no Lyrical binaries yet) + this package
-RUN git clone --depth 1 -b ${NAV2_BRANCH} \
-      https://github.com/ros-navigation/navigation2.git src/navigation2
-COPY . src/vector_pursuit_controller
-
-# Resolve dependencies, apply the nav2-main-vs-Lyrical workarounds, and build
-# only the controller's dependency closure. rosdep is scoped to that closure
-# (via colcon list) so we don't pull deps for unrelated Nav2 packages we never
-# build (e.g. ompl for nav2_smac_planner). apply_patches.sh runs *after* rosdep
-# because one patch targets the BehaviorTree.CPP headers that rosdep installs.
-RUN source /opt/ros/lyrical/setup.bash && \
+# Dependency layer: keyed on this package's manifest only, so source edits do
+# not invalidate it. Resolves and installs deps for the controller's closure,
+# applies the workaround patches (after rosdep — one patch targets the
+# BehaviorTree.CPP headers rosdep installs), and builds the 11 nav2 deps.
+COPY package.xml src/vector_pursuit_controller/package.xml
+COPY docker/patches/apply_patches.sh /opt/apply_patches.sh
+RUN --mount=from=hostcerts,target=/hostcerts \
+    source /opt/ros/lyrical/setup.bash && \
     apt-get update -qq && \
-    rosdep update --rosdistro lyrical 2>&1 | tail -2 && \
+    with-host-ca rosdep update --rosdistro lyrical && \
     PKG_PATHS="$(colcon list --packages-up-to vector_pursuit_controller --paths-only | tr '\n' ' ')" && \
     rosdep install --from-paths ${PKG_PATHS} --ignore-src -r -y --rosdistro lyrical && \
-    bash src/vector_pursuit_controller/docker/patches/apply_patches.sh /opt/ws/src && \
+    bash /opt/apply_patches.sh /opt/ws/src && \
     colcon build --packages-up-to vector_pursuit_controller \
+      --packages-skip vector_pursuit_controller \
       --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     rm -rf build log /var/lib/apt/lists/*
+
+# Controller layer: the only one invalidated by source edits.
+COPY . src/vector_pursuit_controller
+RUN source /opt/ros/lyrical/setup.bash && \
+    colcon build --packages-select vector_pursuit_controller \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+    rm -rf build log
 
 # Auto-source ROS + the overlay for interactive shells
 RUN echo "source /opt/ros/lyrical/setup.bash" >> /etc/bash.bashrc && \

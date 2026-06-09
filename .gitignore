@@ -6,6 +6,3 @@
 *.gcda
 *.gcno
 coverage/
-
-# Docker build: locally-bundled CA certs (see docker/README.md)
-docker/certs/*.crt
