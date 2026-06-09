@@ -25,12 +25,14 @@
 
 #include "nav2_costmap_2d/footprint_collision_checker.hpp"
 #include "nav2_core/controller.hpp"
+#include "nav2_ros_common/lifecycle_node.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "pluginlib/class_list_macros.hpp"
 #include "nav2_util/odometry_utils.hpp"
 #include "nav2_util/geometry_utils.hpp"
-#include "geometry_msgs/msg/pose2_d.hpp"
+// #include "geometry_msgs/msg/pose2_d.hpp"
+#include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/quaternion.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -63,7 +65,7 @@ public:
    * @param costmap_ros Costmap2DROS object of environment
    */
   void configure(
-    const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
+    const nav2::LifecycleNode::WeakPtr & parent,
     std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
     std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros) override;
 
@@ -88,18 +90,22 @@ public:
    * @param pose          Current robot pose (in odom frame)
    * @param velocity      Current measured robot velocity
    * @param goal_checker  Ptr to the goal checker for this task; used to read goal tolerances
+   * @param transformed_global_plan The global plan after being processed by the path handler
+   * @param global_goal   The last pose of the global plan
    * @return              Twist command (linear.x, angular.z)
    */
   geometry_msgs::msg::TwistStamped computeVelocityCommands(
     const geometry_msgs::msg::PoseStamped & pose,
     const geometry_msgs::msg::Twist & velocity,
-    nav2_core::GoalChecker * /*goal_checker*/) override;
+    nav2_core::GoalChecker * /*goal_checker*/,
+    const nav_msgs::msg::Path & transformed_global_plan,
+    const geometry_msgs::msg::PoseStamped & global_goal) override;
 
   /**
-   * @brief nav2_core setPlan - Sets the global plan
-   * @param path The global plan
+   * @brief nav2_core newPathReceived - Receives a new plan from the Planner Server
+   * @param raw_global_path The global plan from the Planner Server
    */
-  void setPlan(const nav_msgs::msg::Path & path) override;
+  void newPathReceived(const nav_msgs::msg::Path & raw_global_path) override;
 
   /**
    * @brief Get the orientation of the line segment between two points
@@ -129,28 +135,6 @@ public:
   void setSpeedLimit(const double & speed_limit, const bool & percentage) override;
 
 protected:
-  /**
-   * @brief Transforms global plan into same frame as pose and clips poses ineligible for lookaheadPoint
-   * Points ineligible to be selected as a lookahead point if they are any of the following:
-   * - Outside the local_costmap (collision avoidance cannot be assured)
-   * @param pose pose to transform
-   * @return Path in new frame
-   */
-  nav_msgs::msg::Path transformGlobalPlan(
-    const geometry_msgs::msg::PoseStamped & pose);
-
-  /**
-   * @brief Transform a pose to another frame.
-   * @param frame Frame ID to transform to
-   * @param in_pose Pose input to transform
-   * @param out_pose transformed output
-   * @return bool if successful
-   */
-  bool transformPose(
-    const std::string frame,
-    const geometry_msgs::msg::PoseStamped & in_pose,
-    geometry_msgs::msg::PoseStamped & out_pose) const;
-
   /**
    * @brief Get lookahead distance
    * @param cmd the current speed to use to compute lookahead point
@@ -293,19 +277,13 @@ protected:
     double & angular_vel, const double & angle_to_path, const geometry_msgs::msg::Twist & curr_speed);
 
   /**
-   * Get the greatest extent of the costmap in meters from the center.
-   * @return max of distance from center in meters to edge of costmap
-   */
-  double getCostmapMaxExtent() const;
-
-  /**
    * @brief Callback executed when a parameter change is detected
    * @param event ParameterEvent message
    */
   rcl_interfaces::msg::SetParametersResult
   dynamicParametersCallback(std::vector<rclcpp::Parameter> parameters);
 
-  rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
+  nav2::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::string plugin_name_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
@@ -339,18 +317,15 @@ protected:
   double max_linear_accel_;
   double rotate_to_heading_min_angle_;
   double goal_dist_tol_;
-  double max_robot_pose_search_dist_;
   bool use_interpolation_;
   bool allow_reversing_;
   bool use_heading_from_path_;
 
   geometry_msgs::msg::Twist last_cmd_vel_;
 
-  nav_msgs::msg::Path global_plan_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> global_path_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PoseStamped>>
-  target_pub_;
-  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> target_arc_pub_;
+  nav2::Publisher<nav_msgs::msg::Path>::SharedPtr global_path_pub_;
+  nav2::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr target_pub_;
+  nav2::Publisher<nav_msgs::msg::Path>::SharedPtr target_arc_pub_;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
   collision_checker_;
 

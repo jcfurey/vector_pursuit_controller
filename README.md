@@ -43,7 +43,6 @@ The following parameters tune the core path-tracking algorithm and are not neede
 | `max_linear_accel`                 | Maximum linear acceleration.                                     |
 | `use_interpolation`                | Calculate lookahead point exactly at the lookahead distance. Otherwise select a discrete point on the path.   |
 | `use_heading_from_path`            | If set to true, uses the orientation from the path poses otherwise, computes appropriate orientations. Only set to true if ypu are using a planner that takes robot heading into account like [Smac Planner](https://docs.nav2.org/configuration/packages/configuring-smac-planner.html).|
-| `max_robot_pose_search_dist` | Maximum search distance for target poses. |
 
 ### Feature Parameters
 These parameters are used to tune and control the behaviour of 
@@ -121,7 +120,6 @@ controller_server:
       max_angular_accel: 3.0
       max_linear_accel: 2.0
       max_lateral_accel: 0.2
-      max_robot_pose_search_dist: 10.0
       use_interpolation: true
       use_heading_from_path: false
       approach_velocity_scaling_dist: 1.0

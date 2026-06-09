@@ -25,17 +25,17 @@
 #include "vector_pursuit_controller/vector_pursuit_controller.hpp"
 #include "angles/angles.h"
 #include "nav2_core/controller_exceptions.hpp"
-#include "nav2_util/node_utils.hpp"
+#include "nav2_ros_common/node_utils.hpp"
+#include "nav2_util/path_utils.hpp"
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
 
-using nav2_util::declare_parameter_if_not_declared;
-using nav2_util::geometry_utils::euclidean_distance;
+using nav2::declare_parameter_if_not_declared;
 using rcl_interfaces::msg::ParameterType;
 
 namespace vector_pursuit_controller
 {
 void VectorPursuitController::configure(
-  const rclcpp_lifecycle::LifecycleNode::WeakPtr & parent,
+  const nav2::LifecycleNode::WeakPtr & parent,
   std::string name, std::shared_ptr<tf2_ros::Buffer> tf,
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros)
 {
@@ -112,9 +112,6 @@ void VectorPursuitController::configure(
   declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_lateral_accel", rclcpp::ParameterValue(0.5));
   declare_parameter_if_not_declared(
-    node, plugin_name_ + ".max_robot_pose_search_dist",
-    rclcpp::ParameterValue(getCostmapMaxExtent()));
-  declare_parameter_if_not_declared(
     node, plugin_name_ + ".use_interpolation",
     rclcpp::ParameterValue(true));
   declare_parameter_if_not_declared(
@@ -167,9 +164,6 @@ void VectorPursuitController::configure(
   node->get_parameter(plugin_name_ + ".max_lateral_accel", max_lateral_accel_);
   node->get_parameter("controller_frequency", control_frequency);
   node->get_parameter(
-    plugin_name_ + ".max_robot_pose_search_dist",
-    max_robot_pose_search_dist_);
-  node->get_parameter(
     plugin_name_ + ".use_interpolation",
     use_interpolation_);
   node->get_parameter(
@@ -198,9 +192,9 @@ void VectorPursuitController::configure(
       "Reversing will be overriden in all cases.");
   }
 
-  global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan", 1);
-  target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("lookahead_point", 1);
-  target_arc_pub_ = node->create_publisher<nav_msgs::msg::Path>("lookahead_collision_arc", 1);
+  global_path_pub_ = node->create_publisher<nav_msgs::msg::Path>("received_global_plan");
+  target_pub_ = node->create_publisher<geometry_msgs::msg::PoseStamped>("lookahead_point");
+  target_arc_pub_ = node->create_publisher<nav_msgs::msg::Path>("lookahead_collision_arc");
 
   // initialize collision checker and set costmap
   collision_checker_ = std::make_unique<nav2_costmap_2d::
@@ -303,7 +297,9 @@ double VectorPursuitController::calcTurningRadius(
 geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommands(
   const geometry_msgs::msg::PoseStamped & pose,
   const geometry_msgs::msg::Twist & speed,
-  nav2_core::GoalChecker * goal_checker)
+  nav2_core::GoalChecker * goal_checker,
+  const nav_msgs::msg::Path & transformed_global_plan,
+  const geometry_msgs::msg::PoseStamped & /*global_goal*/)
 {
   std::lock_guard<std::mutex> lock_reinit(mutex_);
   nav2_costmap_2d::Costmap2D * costmap = costmap_ros_->getCostmap();
@@ -312,14 +308,30 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   // Update goal tolerances
   geometry_msgs::msg::Pose pose_tolerance;
   geometry_msgs::msg::Twist vel_tolerance;
-  if (!goal_checker->getTolerances(pose_tolerance, vel_tolerance)) {
+  double path_length_tolerance;
+  if (!goal_checker->getTolerances(pose_tolerance, vel_tolerance, path_length_tolerance)) {
     RCLCPP_WARN(logger_, "Unable to retrieve goal checker's tolerances!");
   } else {
     goal_dist_tol_ = pose_tolerance.position.x;
   }
 
-  // Transform path to robot base frame
-  auto transformed_plan = transformGlobalPlan(pose);
+  // The controller server's path handler has already pruned the plan; transform
+  // it from the costmap's global frame into the robot base frame for tracking.
+  nav_msgs::msg::Path transformed_plan;
+  if (!nav2_util::transformPathInTargetFrame(
+      transformed_global_plan, transformed_plan, *tf_buffer_,
+      costmap_ros_->getBaseFrameID(), tf2::durationToSec(transform_tolerance_)))
+  {
+    throw nav2_core::ControllerTFError(
+            "Unable to transform plan pose into local frame");
+  }
+
+  if (transformed_plan.poses.empty()) {
+    throw nav2_core::InvalidPath("Resulting plan has 0 poses in it.");
+  }
+
+  // Publish the base-frame plan being tracked for visualization
+  global_path_pub_->publish(transformed_plan);
 
   // Find look ahead distance and point on path
   double lookahead_dist = getLookAheadDistance(last_cmd_vel_);
@@ -666,9 +678,10 @@ geometry_msgs::msg::PoseStamped VectorPursuitController::getLookAheadPoint(
   return pose;
 }
 
-void VectorPursuitController::setPlan(const nav_msgs::msg::Path & path)
+void VectorPursuitController::newPathReceived(const nav_msgs::msg::Path & /*raw_global_path*/)
 {
-  global_plan_ = path;
+  // Path pruning/transformation is handled by the controller server's path
+  // handler; the processed plan is delivered to computeVelocityCommands().
 }
 
 void VectorPursuitController::rotateToHeading(
@@ -748,7 +761,13 @@ bool VectorPursuitController::isCollisionImminent(
   }
 
   const geometry_msgs::msg::Point & robot_xy = robot_pose.pose.position;
-  geometry_msgs::msg::Pose2D curr_pose;
+  // geometry_msgs::msg::Pose2D was removed; a local 2D pose suffices here.
+  struct Pose2D
+  {
+    double x;
+    double y;
+    double theta;
+  } curr_pose;
   curr_pose.x = robot_pose.pose.position.x;
   curr_pose.y = robot_pose.pose.position.y;
   curr_pose.theta = tf2::getYaw(robot_pose.pose.orientation);
@@ -885,104 +904,6 @@ void VectorPursuitController::setSpeedLimit(
     }
   }
 }
-
-nav_msgs::msg::Path VectorPursuitController::transformGlobalPlan(
-  const geometry_msgs::msg::PoseStamped & pose)
-{
-  if (global_plan_.poses.empty()) {
-    throw nav2_core::InvalidPath("Received plan with zero length");
-  }
-
-  // let's get the pose of the robot in the frame of the plan
-  geometry_msgs::msg::PoseStamped robot_pose;
-  if (!transformPose(global_plan_.header.frame_id, pose, robot_pose)) {
-    throw nav2_core::ControllerTFError(
-            "Unable to transform robot pose into global plan's frame");
-  }
-
-  // We'll discard points on the plan that are outside the local costmap
-  double max_costmap_extent = getCostmapMaxExtent();
-
-  auto closest_pose_upper_bound =
-    nav2_util::geometry_utils::first_after_integrated_distance(
-    global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
-
-  // First find the closest pose on the path to the robot
-  // bounded by when the path turns around (if it does) so we don't get a pose from a later
-  // portion of the path
-  auto transformation_begin =
-    nav2_util::geometry_utils::min_by(
-    global_plan_.poses.begin(), closest_pose_upper_bound,
-    [&robot_pose](const geometry_msgs::msg::PoseStamped & ps) {
-      return euclidean_distance(robot_pose, ps);
-    });
-
-  // Find points up to max_transform_dist so we only transform them.
-  auto transformation_end = std::find_if(
-    transformation_begin, global_plan_.poses.end(),
-    [&](const auto & plan_pose) {
-      return euclidean_distance(plan_pose, robot_pose) > max_costmap_extent;
-    });
-
-  // Lambda to transform a PoseStamped from global frame to local
-  auto transformGlobalPoseToLocal = [&](const auto & global_plan_pose) {
-      geometry_msgs::msg::PoseStamped stamped_pose, transformed_pose;
-      stamped_pose.header.frame_id = global_plan_.header.frame_id;
-      stamped_pose.header.stamp = robot_pose.header.stamp;
-      stamped_pose.pose = global_plan_pose.pose;
-      transformPose(costmap_ros_->getBaseFrameID(), stamped_pose, transformed_pose);
-      transformed_pose.pose.position.z = 0.0;
-      return transformed_pose;
-    };
-
-  // Transform the near part of the global plan into the robot's frame of reference.
-  nav_msgs::msg::Path transformed_plan;
-  std::transform(
-    transformation_begin, transformation_end,
-    std::back_inserter(transformed_plan.poses),
-    transformGlobalPoseToLocal);
-  transformed_plan.header.frame_id = costmap_ros_->getBaseFrameID();
-  transformed_plan.header.stamp = robot_pose.header.stamp;
-
-  // Remove the portion of the global plan that we've already passed so we don't
-  // process it on the next iteration (this is called path pruning)
-  global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
-  global_path_pub_->publish(transformed_plan);
-
-  if (transformed_plan.poses.empty()) {
-    throw nav2_core::InvalidPath("Resulting plan has 0 poses in it.");
-  }
-
-  return transformed_plan;
-}
-
-bool VectorPursuitController::transformPose(
-  const std::string frame,
-  const geometry_msgs::msg::PoseStamped & in_pose,
-  geometry_msgs::msg::PoseStamped & out_pose) const
-{
-  if (in_pose.header.frame_id == frame) {
-    out_pose = in_pose;
-    return true;
-  }
-
-  try {
-    tf_buffer_->transform(in_pose, out_pose, frame, transform_tolerance_);
-    out_pose.header.frame_id = frame;
-    return true;
-  } catch (tf2::TransformException & ex) {
-    RCLCPP_ERROR(logger_, "Exception in transformPose: %s", ex.what());
-  }
-  return false;
-}
-
-double VectorPursuitController::getCostmapMaxExtent() const
-{
-  const double max_costmap_dim_meters = std::max(
-    costmap_->getSizeInMetersX(), costmap_->getSizeInMetersY());
-  return max_costmap_dim_meters / 2.0;
-}
-
 
 rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParametersCallback(
   std::vector<rclcpp::Parameter> parameters)
