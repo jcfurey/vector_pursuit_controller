@@ -70,6 +70,31 @@ Lyrical container (the `docker/` infrastructure added on this branch).
 
 `4cb3a8e` resolves known follow-ups #1 and #4 below.
 
+## ROS 2 distro support
+
+Verified 2026-06-09 in the official `ros:<distro>-ros-base` images
+(`docker/check_distros.sh` re-runs the humble/jazzy/kilted checks):
+
+| Distro  | Status | How to use                                                        |
+|---------|--------|-------------------------------------------------------------------|
+| humble  | ✅ binaries | `apt install ros-humble-vector-pursuit-controller` (1.0.2, upstream `master`) |
+| iron    | ❌ EOL  | never released; iron reached end-of-life 2024-11                  |
+| jazzy   | ✅ binaries | `apt install ros-jazzy-vector-pursuit-controller` (2.0.0, `jazzy` branch) |
+| kilted  | ✅ source | no release, but the `jazzy` branch (2.0.0) builds cleanly against kilted's nav2 binaries |
+| lyrical | ✅ source | no nav2 binaries exist for lyrical at all — this branch (`cam_devel` lineage) + `./docker/build.sh` builds nav2 `main` from source |
+
+Caveats:
+
+- The pre-lyrical rows ship the **upstream** controller. The fork's
+  hardening-pass and audit-pass fixes live on `cam_devel`/this branch
+  on top of the lyrical migration; backporting them to a
+  jazzy/kilted-compatible branch is straightforward (the fixes
+  predate-API-agnostic except for the lookahead `nav2_util` reuse,
+  which kilted/jazzy's nav2_util lacks — keep the path-integrated
+  selection loop local there).
+- Kilted support relies on source-building an unreleased branch; if
+  the `jazzy` branch moves, re-run `docker/check_distros.sh`.
+
 ## Workspace integration notes
 
 - Wired up via `src/settings/params/navigation/nav2/behavior_trees/navigate_route_with_recovery.xml`
