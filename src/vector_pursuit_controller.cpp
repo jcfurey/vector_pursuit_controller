@@ -278,14 +278,30 @@ double VectorPursuitController::calcTurningRadius(
   double turning_radius;
   if (allow_reversing_ || target_pose.pose.position.x >= 0.0) {
     if (std::abs(target_pose.pose.position.y) > 1e-6) {
-      double phi_1 = std::atan2(
-        (2 * std::pow(target_pose.pose.position.y, 2) - std::pow(distance, 2)),
-        (2 * target_pose.pose.position.x * target_pose.pose.position.y));
-      double phi_2 = std::atan2(std::pow(distance, 2), (2 * target_pose.pose.position.y));
-      double phi = angles::normalize_angle(phi_1 - phi_2);
-      double term_1 = (k_ * phi) / (((k_ - 1) * phi) + target_angle);
-      double term_2 = std::pow(distance, 2) / (2 * target_pose.pose.position.y);
-      turning_radius = std::abs(term_1 * term_2);
+      // phi is the rotation angle of the pure-pursuit translation screw: the
+      // signed arc swept along the circle that is tangent to the robot heading
+      // at the origin and passes through the target. By the tangent-chord
+      // (inscribed angle) identity that sweep is exactly twice the chord
+      // bearing. (The previous phi_1/phi_2 formulation did not reduce to pure
+      // pursuit when the target heading matched the arc; see UPSTREAM.md.)
+      double phi = 2.0 * std::atan2(
+        target_pose.pose.position.y, target_pose.pose.position.x);
+      // Total rotation of the combined screw: k * phi for the translation screw
+      // plus the shortest heading correction from the arc's natural end heading
+      // (phi) to the target heading. Equals (k - 1) * phi + target_angle but is
+      // wrap-safe at +/-pi.
+      double total_rotation = k_ * phi +
+        angles::shortest_angular_distance(phi, target_angle);
+      // The total rotation crosses zero for real geometries; that pole is a
+      // pure-translation screw, so treat it as straight-line motion rather than
+      // dividing through to inf/NaN.
+      if (std::abs(total_rotation) < 1e-9) {
+        turning_radius = std::numeric_limits<double>::max();
+      } else {
+        double term_1 = (k_ * phi) / total_rotation;
+        double term_2 = std::pow(distance, 2) / (2 * target_pose.pose.position.y);
+        turning_radius = std::abs(term_1 * term_2);
+      }
     } else {
       // Handle case when target is directly ahead
       turning_radius = std::numeric_limits<double>::max();
@@ -337,7 +353,9 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
   auto lookahead_point = getLookAheadPoint(lookahead_dist, transformed_plan);
 
   // Publish target point for visualization
-  target_pub_->publish(lookahead_point);
+  if (target_pub_->get_subscription_count() > 0) {
+    target_pub_->publish(lookahead_point);
+  }
 
   // Setting the velocity direction
   double sign = 1.0;
@@ -371,6 +389,13 @@ geometry_msgs::msg::TwistStamped VectorPursuitController::computeVelocityCommand
     if (lookahead_point.pose.position.y < 0) {
       angular_vel *= -1;
     }
+
+    // Bound the angular acceleration. On a platform with a small/zero
+    // min_turning_radius (e.g. a zero-turn differential drive) a sharp
+    // lookahead yields a small radius and thus a large angular_vel that can
+    // jump between cycles; unlike the rotate-to-heading paths this one was
+    // previously unbounded, commanding infeasible angular jerk.
+    angular_vel = applyAngularAccelerationLimit(angular_vel, last_cmd_vel_.angular.z);
   }
 
   // Collision checking
@@ -481,10 +506,15 @@ void VectorPursuitController::applyConstraints(
     {linear_vel, max_vel_for_curve, cost_vel,
       std::abs(curr_speed.linear.x) + max_linear_accel_ * control_duration_});
 
+  // Ensure the linear velocity is not below the minimum allowed linear
+  // velocity. This must happen BEFORE approach scaling: applying the floor
+  // afterwards would override the goal-approach deceleration and carry
+  // min_linear_velocity_ into the goal. Near the goal the approach scaling
+  // governs, bounded below by min_approach_linear_velocity_ instead.
+  linear_vel = std::max(linear_vel, min_linear_velocity_);
+
   applyApproachVelocityScaling(path, linear_vel);
 
-  // Ensure the linear velocity is not below the minimum allowed linear velocity
-  linear_vel = std::max(linear_vel, min_linear_velocity_);
   linear_vel = sign * linear_vel;
 }
 
@@ -667,11 +697,15 @@ void VectorPursuitController::rotateToHeading(
   linear_vel = 0.0;
   const double sign = angle_to_path > 0.0 ? 1.0 : -1.0;
   angular_vel = sign * rotate_to_heading_angular_vel_;
+  angular_vel = applyAngularAccelerationLimit(angular_vel, curr_speed.angular.z);
+}
 
-  const double & dt = control_duration_;
-  const double min_feasible_angular_speed = curr_speed.angular.z - max_angular_accel_ * dt;
-  const double max_feasible_angular_speed = curr_speed.angular.z + max_angular_accel_ * dt;
-  angular_vel = std::clamp(angular_vel, min_feasible_angular_speed, max_feasible_angular_speed);
+double VectorPursuitController::applyAngularAccelerationLimit(
+  double angular_vel, double curr_angular_vel) const
+{
+  const double max_delta = max_angular_accel_ * control_duration_;
+  return std::clamp(
+    angular_vel, curr_angular_vel - max_delta, curr_angular_vel + max_delta);
 }
 
 void VectorPursuitController::applyAngularBraking(
@@ -680,10 +714,11 @@ void VectorPursuitController::applyAngularBraking(
   const double sign = angle_to_path > 0.0 ? 1.0 : -1.0;
   const double time_to_stop = std::abs(curr_speed.angular.z) / max_angular_accel_;
   const double angle_to_stop = sign * 0.5 * max_angular_accel_ * std::pow(time_to_stop, 2) +
-                               curr_speed.angular.z * time_to_stop;
+    curr_speed.angular.z * time_to_stop;
   if (std::abs(angle_to_stop) >= std::abs(angle_to_path)) {
     // Need to start braking to avoid overshoot
-    angular_vel = sign * std::max(0.0, std::abs(curr_speed.angular.z) - max_angular_accel_ * control_duration_);
+    angular_vel = sign * std::max(0.0,
+        std::abs(curr_speed.angular.z) - max_angular_accel_ * control_duration_);
   }
 }
 
@@ -704,7 +739,9 @@ bool VectorPursuitController::isCollisionImminent(
     return true;
   }
 
-  // visualization messages
+  // visualization messages; skip accumulating and publishing the arc when
+  // nothing is subscribed (this runs in the control loop at 20-100 Hz)
+  const bool publish_arc = target_arc_pub_->get_subscription_count() > 0;
   nav_msgs::msg::Path arc_pts_msg;
   arc_pts_msg.header.frame_id = costmap_ros_->getGlobalFrameID();
   arc_pts_msg.header.stamp = robot_pose.header.stamp;
@@ -750,19 +787,25 @@ bool VectorPursuitController::isCollisionImminent(
     }
 
     // store it for visualization
-    pose_msg.pose.position.x = curr_pose.x;
-    pose_msg.pose.position.y = curr_pose.y;
-    pose_msg.pose.position.z = 0.01;
-    arc_pts_msg.poses.push_back(pose_msg);
+    if (publish_arc) {
+      pose_msg.pose.position.x = curr_pose.x;
+      pose_msg.pose.position.y = curr_pose.y;
+      pose_msg.pose.position.z = 0.01;
+      arc_pts_msg.poses.push_back(pose_msg);
+    }
 
     // check for collision at the projected pose
     if (inCollision(curr_pose.x, curr_pose.y, curr_pose.theta)) {
-      target_arc_pub_->publish(arc_pts_msg);
+      if (publish_arc) {
+        target_arc_pub_->publish(arc_pts_msg);
+      }
       return true;
     }
   }
 
-  target_arc_pub_->publish(arc_pts_msg);
+  if (publish_arc) {
+    target_arc_pub_->publish(arc_pts_msg);
+  }
 
   return false;
 }
@@ -921,7 +964,9 @@ nav_msgs::msg::Path VectorPursuitController::transformGlobalPlan(
   // Remove the portion of the global plan that we've already passed so we don't
   // process it on the next iteration (this is called path pruning)
   global_plan_.poses.erase(begin(global_plan_.poses), transformation_begin);
-  global_path_pub_->publish(transformed_plan);
+  if (global_path_pub_->get_subscription_count() > 0) {
+    global_path_pub_->publish(transformed_plan);
+  }
 
   if (transformed_plan.poses.empty()) {
     throw nav2_core::PlannerException("Resulting plan has 0 poses in it.");
@@ -962,6 +1007,7 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
   std::vector<rclcpp::Parameter> parameters)
 {
   rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
   std::lock_guard<std::mutex> lock_reinit(mutex_);
 
   for (auto parameter : parameters) {
@@ -971,9 +1017,14 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
     if (type == ParameterType::PARAMETER_DOUBLE) {
       if (name == plugin_name_ + ".inflation_cost_scaling_factor") {
         if (parameter.as_double() <= 0.0) {
+          // Reject the update outright (the operator gets feedback through the
+          // parameter API) rather than warning into the log and keeping the
+          // old value, which looks like the change applied.
           RCLCPP_WARN(
             logger_, "The value inflation_cost_scaling_factor is incorrectly set, "
-            "it should be >0. Ignoring parameter update.");
+            "it should be >0. Rejecting parameter update.");
+          result.successful = false;
+          result.reason = "inflation_cost_scaling_factor must be > 0";
           continue;
         }
         inflation_cost_scaling_factor_ = parameter.as_double();
@@ -1043,7 +1094,6 @@ rcl_interfaces::msg::SetParametersResult VectorPursuitController::dynamicParamet
     use_rotate_to_heading_ = true;
   }
 
-  result.successful = true;
   return result;
 }
 

@@ -91,6 +91,11 @@ public:
     return rotateToHeading(linear_vel, angular_vel, angle_to_path, curr_speed);
   }
 
+  double applyAngularAccelerationLimitWrapper(double angular_vel, double curr_angular_vel)
+  {
+    return applyAngularAccelerationLimit(angular_vel, curr_angular_vel);
+  }
+
   void applyConstraintsWrapper(
     const double & curvature, const geometry_msgs::msg::Twist & curr_speed,
     const double & pose_cost, double & linear_vel, nav_msgs::msg::Path & path)
@@ -430,7 +435,9 @@ TEST(VectorPursuitTest, calcTurnRadius) {
 
   EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 0.05, 0.01);
 
-  // beside, rotated 90 degrees
+  // beside, heading reversed: the semicircle through (0, 0.1) naturally ends
+  // pointing backward, so this is pure-pursuit-consistent and must return
+  // exactly the pure-pursuit radius d^2 / (2y) = 0.05
   carrot.pose.position.x = 0.0;
   carrot.pose.position.y = 0.1;
 
@@ -438,7 +445,56 @@ TEST(VectorPursuitTest, calcTurnRadius) {
   tf2_quat.setRPY(0, 0, -M_PI);
   carrot.pose.orientation = tf2::toMsg(tf2_quat);
 
-  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 0.04, 0.01);
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 0.05, 1e-6);
+
+  // pure-pursuit consistency: when the target heading equals the natural end
+  // heading of the tangent arc (2 * atan2(y, x)), the screw blend reduces to
+  // pure pursuit exactly, for any k: radius = d^2 / (2y)
+  carrot.pose.position.x = 2.0;
+  carrot.pose.position.y = 2.0;
+  tf2_quat.setRPY(0, 0, M_PI / 2);
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 2.0, 1e-6);
+
+  // mirror symmetry: the reflected geometry gives the identical radius
+  carrot.pose.position.y = -2.0;
+  tf2_quat.setRPY(0, 0, -M_PI / 2);
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_NEAR(ctrl->calcTurningRadiusWrappper(carrot), 2.0, 1e-6);
+
+  // zero-total-rotation pole (k * phi + residual == 0): a pure-translation
+  // screw must degrade to straight-line motion, not divide to inf/NaN
+  ctrl->setMinTurningRadius(0.0);
+  carrot.pose.position.x = 1.0;
+  carrot.pose.position.y = tan(0.1);  // phi = 0.2
+  tf2_quat.setRPY(0, 0, 0.2 - 8.0 * 0.2);  // residual = -k * phi (k default 8)
+  carrot.pose.orientation = tf2::toMsg(tf2_quat);
+
+  EXPECT_GT(ctrl->calcTurningRadiusWrappper(carrot), 1.0e6);
+}
+
+TEST(VectorPursuitTest, angularAccelerationLimit) {
+  auto ctrl = std::make_shared<Controller>();
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("testVP");
+  std::string name = "PathFollower";
+  auto tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  auto costmap = std::make_shared<nav2_costmap_2d::Costmap2DROS>("fake_costmap");
+  rclcpp_lifecycle::State state;
+  costmap->on_configure(state);
+  // max_angular_accel default 3.2 rad/s^2; control_duration default 1/20 = 0.05 s
+  // => max delta per cycle = 0.16 rad/s
+  ctrl->configure(node, name, tf, costmap);
+
+  // within one step's reach: unchanged
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(0.1, 0.0), 0.1, 1e-9);
+  // large positive jump from rest: clamped to +max delta
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(5.0, 0.0), 0.16, 1e-9);
+  // large negative jump from rest: clamped to -max delta
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(-5.0, 0.0), -0.16, 1e-9);
+  // clamp is relative to the current angular speed, not zero
+  EXPECT_NEAR(ctrl->applyAngularAccelerationLimitWrapper(5.0, 1.0), 1.16, 1e-9);
 }
 
 TEST(VectorPursuitTest, rotateTests)
@@ -625,7 +681,6 @@ TEST(VectorPursuitTest, testDynamicParameter)
       rclcpp::Parameter("test.min_approach_linear_velocity", 0.6),
       rclcpp::Parameter("test.cost_scaling_dist", 2.0),
       rclcpp::Parameter("test.cost_scaling_gain", 4.0),
-      rclcpp::Parameter("test.inflation_cost_scaling_factor", -1.0),
       rclcpp::Parameter("test.inflation_cost_scaling_factor", 1.0),
       rclcpp::Parameter("test.use_collision_detection", true),
       rclcpp::Parameter("test.use_velocity_scaled_lookahead_dist", false),
@@ -670,6 +725,16 @@ TEST(VectorPursuitTest, testDynamicParameter)
   EXPECT_EQ(node->get_parameter("test.use_interpolation").as_bool(), true);
   EXPECT_EQ(node->get_parameter("test.use_heading_from_path").as_bool(), false);
   EXPECT_EQ(node->get_parameter("test.allow_reversing").as_bool(), true);
+
+  // An invalid inflation_cost_scaling_factor is rejected outright (not
+  // silently ignored), and the previous value is retained.
+  auto rejected = rec_param->set_parameters_atomically(
+    {rclcpp::Parameter("test.inflation_cost_scaling_factor", -1.0)});
+  rclcpp::spin_until_future_complete(
+    node->get_node_base_interface(),
+    rejected);
+  EXPECT_FALSE(rejected.get().successful);
+  EXPECT_EQ(node->get_parameter("test.inflation_cost_scaling_factor").as_double(), 1.0);
 }
 
 class TransformGlobalPlanTest : public ::testing::Test
