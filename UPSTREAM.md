@@ -143,6 +143,35 @@ test) targets the pre-2.0 test fixture API and was not ported; the
 min-turning-radius clamp it exercises is covered by the existing
 `calcTurnRadius` "directly behind" case.
 
+## ComputeVelocityCommands tests: data injection
+
+The `ComputeVelocityCommandsTest` fixture used to mirror the controller
+server — building a real `Costmap2DROS`, setting its frame/size
+parameters, and running a `FeasiblePathHandler` to prune/transform the
+plan. On current nav2 that broke twice: `Costmap2DROS` now declares its
+parameters inside `on_configure` (so `set_parameters` before configure
+throws "parameter ... was not declared"), and
+`FeasiblePathHandler::getTransformedGoal` transforms via the costmap's
+*own* tf buffer, which a unit test can't populate.
+
+Reworked to inject the data the controller actually consumes instead of
+reproducing the server pipeline:
+
+- costmap size/resolution supplied via `NodeOptions::parameter_overrides`
+  at construction (the seam `declare_or_get_parameter` reads), not
+  post-hoc `set_parameters`;
+- the plan injected directly in the costmap's base frame, already pruned
+  to the robot, so the controller's `transformPathInTargetFrame`
+  short-circuits (input frame == target frame) — no tf or path-handler
+  plumbing;
+- `robot_pose` placed at the costmap centre in the global frame for the
+  cost/collision lookups, and `use_collision_detection` disabled so an
+  empty test costmap (cells = `NO_INFORMATION`) doesn't abort the
+  command (matching nav2's own controller compute-velocity tests).
+
+The three tests (`straightLineForward/Backward`, `rotateToHeading`) now
+pass, and the full package suite is green (`0 failures`).
+
 ## Zero-turn differential-drive target
 
 The intended deployment is a zero-turn differential-drive base

@@ -26,7 +26,6 @@
 #include "path_utils/path_utils.hpp"
 #include "vector_pursuit_controller/vector_pursuit_controller.hpp"
 #include "nav2_controller/plugins/simple_goal_checker.hpp"
-#include "nav2_controller/plugins/feasible_path_handler.hpp"
 #include "nav2_costmap_2d/costmap_filters/filter_values.hpp"
 #include "nav2_core/controller_exceptions.hpp"
 #include "nav2_costmap_2d/footprint.hpp"
@@ -636,26 +635,28 @@ protected:
     node_ = std::make_shared<nav2::LifecycleNode>("testVP");
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
     ctrl_ = std::make_shared<Controller>();
-    costmap_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>("fake_costmap");
-    checker_.initialize(node_, "fake_checker", costmap_);
   }
 
   void configure_costmap(uint16_t width, double resolution)
   {
-    auto results = costmap_->set_parameters(
+    // Inject the costmap configuration via NodeOptions parameter_overrides.
+    // Current nav2 declares these parameters inside Costmap2DROS::on_configure
+    // (declare_or_get_parameter), so they must be supplied at construction
+    // rather than set afterwards (which throws "parameter ... was not
+    // declared"). width/height are in metres and declared as int.
+    rclcpp::NodeOptions options;
+    options.parameter_overrides(
     {
-      rclcpp::Parameter("global_frame", PATH_FRAME),
-      rclcpp::Parameter("robot_base_frame", ROBOT_FRAME),
-      rclcpp::Parameter("width", width),
-      rclcpp::Parameter("height", width),
-      rclcpp::Parameter("resolution", resolution)
+      {"width", static_cast<int>(width)},
+      {"height", static_cast<int>(width)},
+      {"resolution", resolution}
     });
-    for (const auto & result : results) {
-      EXPECT_TRUE(result.successful) << result.reason;
-    }
+    costmap_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
+      "fake_costmap", "/", false, options);
 
     rclcpp_lifecycle::State state;
     costmap_->on_configure(state);
+    checker_.initialize(node_, "fake_checker", costmap_);
   }
 
   void configure_controller(bool allow_reversing)
@@ -664,188 +665,134 @@ protected:
     nav2::declare_parameter_if_not_declared(
       node_, plugin_name + ".allow_reversing",
       rclcpp::ParameterValue(allow_reversing));
+    // These are kinematic tests on a clear/unknown test costmap; disable
+    // collision detection so an empty costmap (cells = NO_INFORMATION) does
+    // not abort the command. This mirrors nav2's own controller
+    // compute-velocity unit tests.
+    nav2::declare_parameter_if_not_declared(
+      node_, plugin_name + ".use_collision_detection",
+      rclcpp::ParameterValue(false));
     ctrl_->configure(node_, plugin_name, tf_buffer_, costmap_);
   }
 
-  // Mirror the controller server: hand the raw plan to a FeasiblePathHandler,
-  // which prunes/transforms it into the costmap global frame and exposes the
-  // transformed goal — exactly what computeVelocityCommands() now expects.
-  std::pair<nav_msgs::msg::Path, geometry_msgs::msg::PoseStamped> processPlan(
-    const nav_msgs::msg::Path & plan, const geometry_msgs::msg::PoseStamped & robot_pose)
+  // Robot pose at the centre of the costmap, in the costmap global frame and
+  // heading +x. Centring keeps the costmap cost/collision lookups in bounds.
+  geometry_msgs::msg::PoseStamped robot_at_costmap_centre()
   {
-    nav2_controller::FeasiblePathHandler path_handler;
-    path_handler.initialize(node_, node_->get_logger(), "path_handler", costmap_, tf_buffer_);
-    path_handler.setPlan(plan);
-    auto [closest_point, pruned_plan_end] = path_handler.findPlanSegment(robot_pose);
-    nav_msgs::msg::Path transformed_plan =
-      path_handler.transformLocalPlan(closest_point, pruned_plan_end);
-    auto goal = path_handler.getTransformedGoal(robot_pose.header.stamp);
-    return {transformed_plan, goal};
+    auto * cm = costmap_->getCostmap();
+    geometry_msgs::msg::PoseStamped p;
+    p.header.frame_id = costmap_->getGlobalFrameID();
+    p.header.stamp = node_->get_clock()->now();
+    p.pose.position.x = cm->getOriginX() + cm->getSizeInMetersX() / 2.0;
+    p.pose.position.y = cm->getOriginY() + cm->getSizeInMetersY() / 2.0;
+    p.pose.orientation.w = 1.0;
+    return p;
   }
 
-  void setup_transforms(geometry_msgs::msg::Point & robot_position)
+  // Inject a plan directly in the robot base frame, already pruned to start at
+  // the robot — exactly what the controller server's path handler would hand
+  // over. computeVelocityCommands transforms it base->base (a tf2 identity),
+  // so no transforms or path-handler plumbing are needed: the data is the
+  // input. Points are (x, y) in metres relative to the robot.
+  nav_msgs::msg::Path base_frame_plan(
+    const std::vector<std::pair<double, double>> & points)
   {
-    transform_time_ = node_->get_clock()->now();
-    // Note: transforms go parent to child
-
-    // We will have a separate path and costmap frame for completeness,
-    // but we will leave them cooincident for convenience.
-    geometry_msgs::msg::TransformStamped path_to_costmap;
-    path_to_costmap.header.frame_id = PATH_FRAME;
-    path_to_costmap.header.stamp = transform_time_;
-    path_to_costmap.child_frame_id = COSTMAP_FRAME;
-    path_to_costmap.transform.translation.x = 0.0;
-    path_to_costmap.transform.translation.y = 0.0;
-    path_to_costmap.transform.translation.z = 0.0;
-
-    geometry_msgs::msg::TransformStamped costmap_to_robot;
-    costmap_to_robot.header.frame_id = COSTMAP_FRAME;
-    costmap_to_robot.header.stamp = transform_time_;
-    costmap_to_robot.child_frame_id = ROBOT_FRAME;
-    costmap_to_robot.transform.translation.x = robot_position.x;
-    costmap_to_robot.transform.translation.y = robot_position.y;
-    costmap_to_robot.transform.translation.z = robot_position.z;
-
-    tf2_msgs::msg::TFMessage tf_message;
-    tf_message.transforms = {
-      path_to_costmap,
-      costmap_to_robot
-    };
-    for (const auto & transform : tf_message.transforms) {
-      tf_buffer_->setTransform(transform, "test", false);
+    nav_msgs::msg::Path plan;
+    // Stamp with the costmap's actual base frame so the controller's
+    // transformPathInTargetFrame short-circuits (input frame == target frame)
+    // and treats the points as already robot-relative.
+    plan.header.frame_id = costmap_->getBaseFrameID();
+    plan.header.stamp = node_->get_clock()->now();
+    for (const auto & [x, y] : points) {
+      geometry_msgs::msg::PoseStamped ps;
+      ps.header = plan.header;
+      ps.pose.position.x = x;
+      ps.pose.position.y = y;
+      ps.pose.orientation.w = 1.0;
+      plan.poses.push_back(ps);
     }
-    tf_buffer_->setUsingDedicatedThread(true);  // lying to let it do transforms
+    return plan;
   }
 
-  static constexpr char PATH_FRAME[] = "test_path_frame";
-  static constexpr char COSTMAP_FRAME[] = "test_costmap_frame";
-  static constexpr char ROBOT_FRAME[] = "test_robot_frame";
+  // Straight plan of `n` poses spaced `step` m along the robot's heading
+  // (sign +1 ahead, -1 behind).
+  nav_msgs::msg::Path straight_plan(int n, double step, double sign)
+  {
+    std::vector<std::pair<double, double>> pts;
+    for (int i = 0; i < n; i++) {pts.emplace_back(sign * step * i, 0.0);}
+    return base_frame_plan(pts);
+  }
 
   std::shared_ptr<Controller> ctrl_;
   std::shared_ptr<nav2::LifecycleNode> node_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   nav2_controller::SimpleGoalChecker checker_;
-
-  rclcpp::Time transform_time_;
 };
 
 TEST_F(ComputeVelocityCommandsTest, straightLineForward)
 {
-  geometry_msgs::msg::PoseStamped robot_pose;
-  robot_pose.header.frame_id = COSTMAP_FRAME;
-  robot_pose.header.stamp = transform_time_;
-  robot_pose.pose.position.x = 1.0;
-  robot_pose.pose.position.y = 1.0;
-  robot_pose.pose.position.z = 0.0;
-
-  // setup
-  setup_transforms(robot_pose.pose.position);
   configure_costmap(50u, 0.1);
   configure_controller(false);
-
-  // Set a plan in a straight line from the robot
-  nav_msgs::msg::Path path;
-  path.header.frame_id = PATH_FRAME;
-  path.header.stamp = transform_time_;
-  path.poses.resize(10);
-  for (uint i = 0; i != path.poses.size(); i++) {
-    path.poses[i].header.frame_id = PATH_FRAME;
-    path.poses[i].header.stamp = transform_time_;
-    path.poses[i].pose.position.y = 1.0;
-    path.poses[i].pose.position.x = static_cast<double>(i);
-  }
-
   ctrl_->activate();
-  auto [transformed_plan, goal] = processPlan(path, robot_pose);
 
-  // Set velocity
-  geometry_msgs::msg::Twist robot_velocity;
-  robot_velocity.linear.x = 0.0;
-  robot_velocity.angular.z = 0.0;
+  auto robot_pose = robot_at_costmap_centre();
+  // Straight plan ahead of the robot, in the base frame.
+  auto plan = straight_plan(10, 1.0, +1.0);
+  auto goal = plan.poses.back();  // unused by the controller
+
+  geometry_msgs::msg::Twist robot_velocity;  // at rest
 
   auto cmd_vel = ctrl_->computeVelocityCommandsWrapper(
-    robot_pose, robot_velocity, &checker_, transformed_plan, goal);
-  EXPECT_EQ(cmd_vel.twist.linear.x, 0.1);
+    robot_pose, robot_velocity, &checker_, plan, goal);
+  // From rest, linear velocity is acceleration-limited to
+  // max_linear_accel * control_duration = 2.0 * (1/20) = 0.1, going straight.
+  EXPECT_NEAR(cmd_vel.twist.linear.x, 0.1, 1e-6);
   EXPECT_NEAR(cmd_vel.twist.angular.z, 0.0, 0.01);
 }
 
 TEST_F(ComputeVelocityCommandsTest, straightLineBackward)
 {
-  geometry_msgs::msg::PoseStamped robot_pose;
-  robot_pose.header.frame_id = COSTMAP_FRAME;
-  robot_pose.header.stamp = transform_time_;
-  robot_pose.pose.position.x = 25.0;
-  robot_pose.pose.position.y = 25.0;
-  robot_pose.pose.position.z = 0.0;
-
-  // setup
-  setup_transforms(robot_pose.pose.position);
   configure_costmap(50u, 0.1);
-  configure_controller(true);
-
-  // Set a plan in a straight line from the robot
-  nav_msgs::msg::Path path;
-  path.header.frame_id = PATH_FRAME;
-  path.header.stamp = transform_time_;
-  path.poses.resize(10);
-  for (uint i = 0; i != path.poses.size(); i++) {
-    path.poses[i].header.frame_id = PATH_FRAME;
-    path.poses[i].header.stamp = transform_time_;
-    path.poses[i].pose.position.y = 25.0;
-    path.poses[i].pose.position.x = static_cast<double>(25 - i);
-  }
-
+  configure_controller(true);  // allow_reversing
   ctrl_->activate();
-  auto [transformed_plan, goal] = processPlan(path, robot_pose);
 
-  // Set velocity
-  geometry_msgs::msg::Twist robot_velocity;
-  robot_velocity.linear.x = 0.0;
-  robot_velocity.angular.z = 0.0;
+  auto robot_pose = robot_at_costmap_centre();
+  // Straight plan directly behind the robot, in the base frame.
+  auto plan = straight_plan(10, 1.0, -1.0);
+  auto goal = plan.poses.back();
+
+  geometry_msgs::msg::Twist robot_velocity;  // at rest
 
   auto cmd_vel = ctrl_->computeVelocityCommandsWrapper(
-    robot_pose, robot_velocity, &checker_, transformed_plan, goal);
-  EXPECT_EQ(cmd_vel.twist.linear.x, -0.1);
+    robot_pose, robot_velocity, &checker_, plan, goal);
+  // Lookahead is behind, so the controller reverses: same magnitude, negative.
+  EXPECT_NEAR(cmd_vel.twist.linear.x, -0.1, 1e-6);
   EXPECT_NEAR(cmd_vel.twist.angular.z, 0.0, 0.01);
 }
 
 TEST_F(ComputeVelocityCommandsTest, rotateToHeading)
 {
-  geometry_msgs::msg::PoseStamped robot_pose;
-  robot_pose.header.frame_id = COSTMAP_FRAME;
-  robot_pose.header.stamp = transform_time_;
-  robot_pose.pose.position.x = 25.0;
-  robot_pose.pose.position.y = 25.0;
-  robot_pose.pose.position.z = 0.0;
-
-  // setup
-  setup_transforms(robot_pose.pose.position);
   configure_costmap(50u, 0.1);
   configure_controller(false);
-
-  // Set a plan in a straight line from the robot
-  nav_msgs::msg::Path path;
-  path.header.frame_id = PATH_FRAME;
-  path.header.stamp = transform_time_;
-  path.poses.resize(10);
-  for (uint i = 0; i != path.poses.size(); i++) {
-    path.poses[i].header.frame_id = PATH_FRAME;
-    path.poses[i].header.stamp = transform_time_;
-    path.poses[i].pose.position.y = static_cast<double>(30 + i);
-    path.poses[i].pose.position.x = static_cast<double>(25 + i);
-  }
-
   ctrl_->activate();
-  auto [transformed_plan, goal] = processPlan(path, robot_pose);
 
-  // Set velocity
-  geometry_msgs::msg::Twist robot_velocity;
-  robot_velocity.linear.x = 0.0;
-  robot_velocity.angular.z = 0.0;
+  auto robot_pose = robot_at_costmap_centre();
+  // Plan rising steeply to the side: the lookahead is well beyond the
+  // rotate-to-heading angle, so the robot should rotate in place.
+  std::vector<std::pair<double, double>> pts;
+  for (int i = 0; i < 10; i++) {
+    pts.emplace_back(i, 5.0 + i);
+                                                             }
+  auto plan = base_frame_plan(pts);
+  auto goal = plan.poses.back();
+
+  geometry_msgs::msg::Twist robot_velocity;  // at rest
 
   auto cmd_vel = ctrl_->computeVelocityCommandsWrapper(
-    robot_pose, robot_velocity, &checker_, transformed_plan, goal);
-  EXPECT_EQ(cmd_vel.twist.linear.x, 0.0);
+    robot_pose, robot_velocity, &checker_, plan, goal);
+  // Rotating in place: no translation, angular velocity acceleration-limited
+  // from rest to max_angular_accel * control_duration = 3.2 * (1/20) = 0.16.
+  EXPECT_NEAR(cmd_vel.twist.linear.x, 0.0, 1e-6);
   EXPECT_NEAR(cmd_vel.twist.angular.z, 0.16, 0.01);
 }

@@ -734,10 +734,11 @@ void VectorPursuitController::applyAngularBraking(
   const double sign = angle_to_path > 0.0 ? 1.0 : -1.0;
   const double time_to_stop = std::abs(curr_speed.angular.z) / max_angular_accel_;
   const double angle_to_stop = sign * 0.5 * max_angular_accel_ * std::pow(time_to_stop, 2) +
-                               curr_speed.angular.z * time_to_stop;
+    curr_speed.angular.z * time_to_stop;
   if (std::abs(angle_to_stop) >= std::abs(angle_to_path)) {
     // Need to start braking to avoid overshoot
-    angular_vel = sign * std::max(0.0, std::abs(curr_speed.angular.z) - max_angular_accel_ * control_duration_);
+    angular_vel = sign * std::max(
+      0.0, std::abs(curr_speed.angular.z) - max_angular_accel_ * control_duration_);
   }
 }
 

@@ -269,7 +269,8 @@ protected:
    * @param curr_speed the current robot speed
    */
   void applyAngularBraking(
-    double & angular_vel, const double & angle_to_path, const geometry_msgs::msg::Twist & curr_speed);
+    double & angular_vel, const double & angle_to_path,
+    const geometry_msgs::msg::Twist & curr_speed);
 
   /**
    * @brief Callback executed when a parameter change is detected
