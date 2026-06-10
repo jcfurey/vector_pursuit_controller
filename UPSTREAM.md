@@ -192,28 +192,40 @@ README "Platform notes" documents the choice.
 
 ## ROS 2 distro support
 
-Verified 2026-06-09 in the official `ros:<distro>-ros-base` images
+**This branch's source is Lyrical/Rolling-only.** It targets the post-Kilted
+nav2 API — `nav2_ros_common` (`nav2::LifecycleNode`,
+`nav2::declare_parameter_if_not_declared`), `nav2_util::transformPathInTargetFrame`
+/ `controller_utils`, the path-handler-pruned `nav2_core::Controller` signature,
+and Kilted+ `ament_auto_package` header scoping. It does **not** build on Jazzy
+or earlier (verified: Jazzy has no `nav2_ros_common` rosdep key, and even with
+every available nav2 dep installed CMake fails on the missing
+`nav2_controller::feasible_path_handler` target).
+
+The pre-Lyrical distros are served by the **upstream** releases/branches, which
+do **not** contain this fork's fixes (see "Backports" below). Verified
+2026-06-10 in the official `ros:<distro>-ros-base` images
 (`docker/check_distros.sh` re-runs the humble/jazzy/kilted checks):
 
-| Distro  | Status | How to use                                                        |
-|---------|--------|-------------------------------------------------------------------|
-| humble  | ✅ binaries | `apt install ros-humble-vector-pursuit-controller` (1.0.2, upstream `master`) |
-| iron    | ❌ EOL  | never released; iron reached end-of-life 2024-11                  |
-| jazzy   | ✅ binaries | `apt install ros-jazzy-vector-pursuit-controller` (2.0.0, `jazzy` branch) |
-| kilted  | ✅ source | no release, but the `jazzy` branch (2.0.0) builds cleanly against kilted's nav2 binaries |
-| lyrical | ✅ source | no nav2 binaries exist for lyrical at all — this branch (`cam_devel` lineage) + `./docker/build.sh` builds nav2 `main` from source |
+| Distro  | Builds THIS branch's source? | Pre-Lyrical option (no fork fixes)                                  |
+|---------|------------------------------|--------------------------------------------------------------------|
+| humble  | ❌ old nav2 API              | `apt install ros-humble-vector-pursuit-controller` (1.0.2, upstream `master`) |
+| iron    | ❌ EOL (2024-11)             | never released                                                     |
+| jazzy   | ❌ no `nav2_ros_common`, no `feasible_path_handler`, pre-Kilted ament | `apt install ros-jazzy-vector-pursuit-controller` (2.0.0) / upstream `jazzy` branch |
+| kilted  | ❌ no `nav2_ros_common`      | upstream `jazzy` branch (2.0.0) source-builds against kilted's nav2 binaries |
+| lyrical | ✅ (`./docker/build.sh`, nav2 `main` from source) | no nav2 binaries exist for lyrical yet                |
 
-Caveats:
+`docker/check_distros.sh` builds the **upstream `jazzy` branch** (not HEAD) for
+the humble/jazzy/kilted rows — that is what is installable/buildable there.
 
-- The pre-lyrical rows ship the **upstream** controller. The fork's
-  hardening-pass and audit-pass fixes live on `cam_devel`/this branch
-  on top of the lyrical migration; backporting them to a
-  jazzy/kilted-compatible branch is straightforward (the fixes
-  predate-API-agnostic except for the lookahead `nav2_util` reuse,
-  which kilted/jazzy's nav2_util lacks — keep the path-integrated
-  selection loop local there).
-- Kilted support relies on source-building an unreleased branch; if
-  the `jazzy` branch moves, re-run `docker/check_distros.sh`.
+### Backports
+
+The fork's fixes (calcTurningRadius geometry, signed-radius heading handling,
+`min_linear_velocity`-before-approach-scaling, parameter rejection, publisher
+gating, and the diff-drive angular-acceleration clamp) live on this
+Lyrical-targeted branch. To run them on a pre-Lyrical distro they must be
+re-applied to a branch off the relevant upstream branch (the APIs differ):
+the `claude/jazzy-backport-rd2g2p` branch carries them on top of `origin/jazzy`
+(2.0.0) for Jazzy/Kilted.
 
 ## Workspace integration notes
 
